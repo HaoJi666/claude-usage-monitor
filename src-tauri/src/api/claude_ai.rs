@@ -81,7 +81,7 @@ fn parse_period(v: &serde_json::Value) -> Option<PeriodUsage> {
     })
 }
 
-fn parse_extra_usage(data: &serde_json::Value) -> Option<ExtraUsage> {
+pub fn parse_extra_usage(data: &serde_json::Value) -> Option<ExtraUsage> {
     // Try top-level or nested under "extra_usage" / "overage"
     let src = data
         .get("extra_usage")

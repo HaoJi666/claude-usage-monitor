@@ -32,8 +32,16 @@ impl Default for AppSettings {
 
 #[tauri::command]
 pub fn get_usage(state: State<'_, AppState>) -> Result<Option<ProUsageData>, String> {
-    let guard = state.latest_usage.lock().map_err(|e| e.to_string())?;
-    Ok(guard.clone())
+    let mut usage = state.latest_usage.lock().map_err(|e| e.to_string())?.clone();
+    // Merge separately-stored extra_usage if the main response didn't include it.
+    if let Some(u) = usage.as_mut() {
+        if u.extra_usage.is_none() {
+            if let Ok(extra_guard) = state.latest_extra.lock() {
+                u.extra_usage = extra_guard.clone();
+            }
+        }
+    }
+    Ok(usage)
 }
 
 #[tauri::command]
@@ -168,11 +176,27 @@ pub fn cm_api_data(
     let data_val: serde_json::Value =
         serde_json::from_str(&data).map_err(|e| e.to_string())?;
 
+    // Always try to extract extra_usage from every captured response,
+    // since it may arrive from a billing/credits endpoint separately.
+    if let Some(extra) = crate::api::claude_ai::parse_extra_usage(&data_val) {
+        log::info!(
+            "cm_api_data: extra_usage found — spent={:.2} limit={:.2} enabled={} url={}",
+            extra.spent, extra.limit, extra.enabled, url
+        );
+        *state.latest_extra.lock().map_err(|e| e.to_string())? = Some(extra);
+    } else {
+        let keys: Vec<&str> = data_val.as_object()
+            .map(|m| m.keys().map(|k| k.as_str()).collect())
+            .unwrap_or_default();
+        log::info!("cm_api_data: no extra_usage from url={} top_keys={:?}", url, keys);
+    }
+
     if let Some(usage) = crate::api::claude_ai::parse_usage(&url, &data_val) {
         log::info!(
-            "cm_api_data: 5h={:.1}%  7d={:.1}%",
+            "cm_api_data: 5h={:.1}%  7d={:.1}%  extra_usage={}",
             usage.five_hour.utilization,
-            usage.seven_day.utilization
+            usage.seven_day.utilization,
+            usage.extra_usage.is_some()
         );
 
         // Hide the session window now that we have data.
@@ -203,13 +227,19 @@ pub fn cm_api_data(
             )));
         }
 
-        let _ = app.emit("usage-updated", &usage);
+        // Merge latest_extra when emitting so the frontend always has extra_usage.
+        let mut usage_to_emit = usage.clone();
+        if usage_to_emit.extra_usage.is_none() {
+            if let Ok(extra_guard) = state.latest_extra.lock() {
+                usage_to_emit.extra_usage = extra_guard.clone();
+            }
+        }
+        let _ = app.emit("usage-updated", &usage_to_emit);
     } else {
-        // Log at info level so we can diagnose API format mismatches.
         let keys: Vec<&str> = data_val.as_object()
             .map(|m| m.keys().map(|k| k.as_str()).collect())
             .unwrap_or_default();
-        log::info!("cm_api_data: no usage parsed from url={} top_keys={:?}", url, keys);
+        log::info!("cm_api_data: no main usage parsed from url={} top_keys={:?}", url, keys);
     }
 
     Ok(())

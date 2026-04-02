@@ -1,20 +1,11 @@
-import { useEffect } from "react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 import { useUsage, ExtraUsage, PeriodUsage } from "./hooks/useUsage";
 
 export default function App() {
   const { usage, loading, error, isLoggedIn, refetch } = useUsage();
-
-  // Hide window on focus loss
-  useEffect(() => {
-    const win = getCurrentWindow();
-    const unlisten = win.onFocusChanged(({ payload: focused }) => {
-      if (!focused) win.hide();
-    });
-    return () => { unlisten.then((fn) => fn()); };
-  }, []);
+  // Focus-loss auto-hide is handled on the Rust side (on_window_event).
+  // JS onFocusChanged is unreliable with ActivationPolicy::Accessory.
 
   async function handleLogout() {
     try { await invoke("logout"); } catch (_) {}

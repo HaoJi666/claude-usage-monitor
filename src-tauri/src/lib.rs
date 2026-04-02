@@ -108,7 +108,11 @@ const FETCH_INTERCEPTOR_JS: &str = r#"
         u.indexOf('/api/organizations')  !== -1 ||
         u.indexOf('/api/account')        !== -1 ||
         u.indexOf('usage_limit')         !== -1 ||
-        u.indexOf('rate_limit')          !== -1
+        u.indexOf('rate_limit')          !== -1 ||
+        u.indexOf('/api/billing')        !== -1 ||
+        u.indexOf('/api/credits')        !== -1 ||
+        u.indexOf('extra_usage')         !== -1 ||
+        u.indexOf('overage')             !== -1
       );
 
       if (resp.ok && hit) {
@@ -180,6 +184,7 @@ pub struct AppState {
     pub db: Mutex<rusqlite::Connection>,
     pub http_client: reqwest::Client,
     pub latest_usage: Mutex<Option<api::claude_ai::ProUsageData>>,
+    pub latest_extra: Mutex<Option<api::claude_ai::ExtraUsage>>,
     pub is_logged_in: Mutex<bool>,
     pub session_email: Mutex<Option<String>>,
 }
@@ -219,6 +224,7 @@ pub fn run() {
                 db: Mutex::new(conn),
                 http_client,
                 latest_usage: Mutex::new(None),
+                latest_extra: Mutex::new(None),
                 is_logged_in: Mutex::new(false),
                 session_email: Mutex::new(None),
             });
@@ -276,6 +282,18 @@ pub fn run() {
                 }
             })
             .build()?;
+
+            // ── Auto-hide main window on focus loss (Rust-side) ──────
+            // JS onFocusChanged is unreliable with ActivationPolicy::Accessory.
+            // Listening at the native window-event level works regardless.
+            if let Some(main_win) = app.get_webview_window("main") {
+                let win_clone = main_win.clone();
+                main_win.on_window_event(move |event| {
+                    if let tauri::WindowEvent::Focused(false) = event {
+                        let _ = win_clone.hide();
+                    }
+                });
+            }
 
             // ── Tray icon ─────────────────────────────────────────────
             // Right-click context menu with Exit option.
