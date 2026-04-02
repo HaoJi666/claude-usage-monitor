@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "session-window",
+  "description": "Capabilities for the claude.ai session webview and OAuth popup",
+  "windows": ["session", "oauth-popup"],
+  "permissions": [
+    "core:default",
+    "opener:default"
+  ]
+}

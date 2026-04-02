@@ -1,0 +1,42 @@
+@import "tailwindcss";
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  color-scheme: light dark;
+}
+
+body {
+  background: transparent;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(128, 128, 128, 0.4);
+  border-radius: 2px;
+}
+
+/* Circular progress animation */
+@keyframes progressAnim {
+  from { stroke-dashoffset: 314; }
+}
+
+.progress-circle {
+  transition: stroke-dashoffset 0.6s ease-in-out, stroke 0.3s ease;
+  animation: progressAnim 0.8s ease-out;
+}
