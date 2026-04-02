@@ -7,10 +7,21 @@ export interface PeriodUsage {
   resets_at: string;
 }
 
+export interface ExtraUsage {
+  enabled: boolean;
+  spent: number;
+  limit: number;
+  balance: number;
+  percent_used: number;
+  resets_at: string;
+  auto_reload: boolean;
+}
+
 export interface UsageData {
   five_hour: PeriodUsage;
   seven_day: PeriodUsage;
   plan_type?: string | null;
+  extra_usage?: ExtraUsage | null;
   fetched_at: string;
 }
 
@@ -42,24 +53,19 @@ export function useUsage() {
   }, []);
 
   useEffect(() => {
-    // Load initial login state and usage cache
     invoke<LoginStatus>("get_login_status")
       .then((s) => setIsLoggedIn(s.is_logged_in))
       .catch(() => {});
     fetchUsage();
 
-    // Real-time usage updates from the session webview
     listen<UsageData>("usage-updated", (event) => {
       setUsage(event.payload);
       setError(null);
     }).then((fn) => { unlistenUsage.current = fn; });
 
-    // Login state changes from the session webview
     listen<boolean>("login-status-changed", (event) => {
       setIsLoggedIn(event.payload);
-      if (!event.payload) {
-        setUsage(null);
-      }
+      if (!event.payload) setUsage(null);
     }).then((fn) => { unlistenLogin.current = fn; });
 
     return () => {

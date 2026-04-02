@@ -2,6 +2,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use tauri::{
+    menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Emitter, Manager,
 };
@@ -199,6 +200,10 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            // ── macOS: hide from Dock, appear only in menu bar ────────
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
             // ── Database ──────────────────────────────────────────────
             let db_path = get_db_path(app.handle());
             let conn = rusqlite::Connection::open(&db_path)
@@ -273,11 +278,23 @@ pub fn run() {
             .build()?;
 
             // ── Tray icon ─────────────────────────────────────────────
+            // Right-click context menu with Exit option.
+            let quit_item = MenuItem::with_id(app, "quit", "Exit App", true, None::<&str>)?;
+            let tray_menu = Menu::new(app)?;
+            tray_menu.append(&quit_item)?;
+
             TrayIconBuilder::with_id("main-tray")
                 .icon(app.default_window_icon().unwrap().clone())
                 .icon_as_template(true)
                 .title("Claude")
                 .tooltip("Claude Usage Monitor")
+                .menu(&tray_menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| {
+                    if event.id() == "quit" {
+                        app.exit(0);
+                    }
+                })
                 .on_tray_icon_event(|tray, event| {
                     if let TrayIconEvent::Click {
                         button: MouseButton::Left,
@@ -294,7 +311,7 @@ pub fn run() {
                                 let cx = position.x as i32;
                                 let cy = position.y as i32;
                                 let _ = window.set_position(tauri::PhysicalPosition::new(
-                                    (cx - 200).max(0),
+                                    (cx - 180).max(0),
                                     cy + 4,
                                 ));
                                 let _ = window.show();
