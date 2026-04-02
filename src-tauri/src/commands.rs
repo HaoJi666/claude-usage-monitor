@@ -176,41 +176,21 @@ pub fn cm_api_data(
     let data_val: serde_json::Value =
         serde_json::from_str(&data).map_err(|e| e.to_string())?;
 
-    // Dump the full response for usage/organizations URLs so we can see the real structure.
-    {
-        let u = url.as_str();
-        let is_usage_url = u.contains("/api/usage") || u.contains("/api/organizations")
-            || u.contains("/api/account") || u.contains("usage_limit");
-        if is_usage_url {
-            let raw = serde_json::to_string(&data_val).unwrap_or_default();
-            log::info!(
-                "cm_api_data DUMP url={} len={} body={}",
-                url, raw.len(), &raw[..raw.len().min(4000)]
-            );
-        }
-    }
-
-    // Always try to extract extra_usage from every captured response,
-    // since it may arrive from a billing/credits endpoint separately.
-    if let Some(extra) = crate::api::claude_ai::parse_extra_usage(&data_val) {
-        log::info!(
-            "cm_api_data: extra_usage found — spent={:.2} limit={:.2} enabled={} url={}",
-            extra.spent, extra.limit, extra.enabled, url
-        );
-        *state.latest_extra.lock().map_err(|e| e.to_string())? = Some(extra);
-    } else {
-        let keys: Vec<&str> = data_val.as_object()
-            .map(|m| m.keys().map(|k| k.as_str()).collect())
-            .unwrap_or_default();
-        log::info!("cm_api_data: no extra_usage from url={} top_keys={:?}", url, keys);
-    }
-
+    // ── /usage endpoint: extract 5h/7d quota AND extra_usage ─────────────────
     if let Some(usage) = crate::api::claude_ai::parse_usage(&url, &data_val) {
+        // Also parse the nested extra_usage object from the same response.
+        if let Some(extra) = crate::api::claude_ai::parse_usage_extra(&data_val) {
+            log::info!(
+                "cm_api_data: extra_usage — enabled={} spent={:.2} limit={:.2} util={:.1}%",
+                extra.enabled, extra.spent, extra.limit, extra.percent_used
+            );
+            *state.latest_extra.lock().map_err(|e| e.to_string())? = Some(extra);
+        }
+
         log::info!(
-            "cm_api_data: 5h={:.1}%  7d={:.1}%  extra_usage={}",
+            "cm_api_data: 5h={:.1}%  7d={:.1}%",
             usage.five_hour.utilization,
-            usage.seven_day.utilization,
-            usage.extra_usage.is_some()
+            usage.seven_day.utilization
         );
 
         // Hide the session window now that we have data.
@@ -241,19 +221,57 @@ pub fn cm_api_data(
             )));
         }
 
-        // Merge latest_extra when emitting so the frontend always has extra_usage.
+        // Emit with extra_usage merged from latest_extra (balance may be 0 until
+        // /prepaid/credits arrives, which triggers another emit shortly after).
         let mut usage_to_emit = usage.clone();
-        if usage_to_emit.extra_usage.is_none() {
-            if let Ok(extra_guard) = state.latest_extra.lock() {
-                usage_to_emit.extra_usage = extra_guard.clone();
-            }
+        if let Ok(extra_guard) = state.latest_extra.lock() {
+            usage_to_emit.extra_usage = extra_guard.clone();
         }
         let _ = app.emit("usage-updated", &usage_to_emit);
-    } else {
-        let keys: Vec<&str> = data_val.as_object()
-            .map(|m| m.keys().map(|k| k.as_str()).collect())
-            .unwrap_or_default();
-        log::info!("cm_api_data: no main usage parsed from url={} top_keys={:?}", url, keys);
+    }
+
+    // ── /prepaid/credits: patch balance + auto_reload into latest_extra ───────
+    if url.contains("/prepaid/credits") {
+        if let Some((balance, auto_reload)) = crate::api::claude_ai::parse_prepaid_credits(&data_val) {
+            log::info!(
+                "cm_api_data: prepaid/credits — balance={:.2} auto_reload={}",
+                balance, auto_reload
+            );
+            // Update latest_extra in place; clone the result for the re-emit.
+            let updated_extra = {
+                let mut guard = state.latest_extra.lock().map_err(|e| e.to_string())?;
+                if let Some(ref mut extra) = *guard {
+                    extra.balance = balance;
+                    extra.auto_reload = auto_reload;
+                } else {
+                    // /prepaid/credits arrived before /usage — store partial.
+                    *guard = Some(crate::api::claude_ai::ExtraUsage {
+                        enabled: false, spent: 0.0, limit: 0.0,
+                        balance, percent_used: 0.0,
+                        resets_at: String::new(), auto_reload,
+                    });
+                }
+                guard.clone()
+            }; // lock released
+
+            // Re-emit usage-updated so the frontend gets the real balance.
+            if let Some(mut usage) = state.latest_usage.lock().ok().and_then(|g| g.clone()) {
+                usage.extra_usage = updated_extra;
+                let _ = app.emit("usage-updated", &usage);
+            }
+        }
+    }
+
+    // ── /subscription_details: patch billing-cycle reset date ────────────────
+    if url.contains("/subscription_details") {
+        if let Some(date) = data_val.get("next_charge_date").and_then(|v| v.as_str()) {
+            let resets_at = format!("{}T00:00:00Z", date);
+            log::info!("cm_api_data: subscription_details — next_charge_date={}", date);
+            let mut guard = state.latest_extra.lock().map_err(|e| e.to_string())?;
+            if let Some(ref mut extra) = *guard {
+                extra.resets_at = resets_at;
+            }
+        }
     }
 
     Ok(())

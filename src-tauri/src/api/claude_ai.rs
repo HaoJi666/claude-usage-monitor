@@ -41,8 +41,6 @@ pub fn parse_usage(url: &str, data: &serde_json::Value) -> Option<ProUsageData> 
         .and_then(|v| v.as_str())
         .map(String::from);
 
-    let extra_usage = parse_extra_usage(data);
-
     // Format A: { five_hour: { utilization, resets_at }, seven_day: {...} }
     if let (Some(fh), Some(sd)) = (data.get("five_hour"), data.get("seven_day")) {
         if let (Some(five_hour), Some(seven_day)) = (parse_period(fh), parse_period(sd)) {
@@ -50,7 +48,7 @@ pub fn parse_usage(url: &str, data: &serde_json::Value) -> Option<ProUsageData> 
                 five_hour,
                 seven_day,
                 plan_type,
-                extra_usage,
+                extra_usage: None, // populated separately in AppState::latest_extra
                 fetched_at: Utc::now().to_rfc3339(),
             });
         }
@@ -64,7 +62,7 @@ pub fn parse_usage(url: &str, data: &serde_json::Value) -> Option<ProUsageData> 
                     five_hour,
                     seven_day,
                     plan_type,
-                    extra_usage,
+                    extra_usage: None,
                     fetched_at: Utc::now().to_rfc3339(),
                 });
             }
@@ -81,86 +79,34 @@ fn parse_period(v: &serde_json::Value) -> Option<PeriodUsage> {
     })
 }
 
-pub fn parse_extra_usage(data: &serde_json::Value) -> Option<ExtraUsage> {
-    // Try all plausible container key names (any may be the real one).
-    const CONTAINERS: &[&str] = &[
-        "extra_usage", "overage", "metered_usage", "pay_as_you_go",
-        "addon_usage", "addons", "billing_usage", "credit_usage",
-    ];
-    // unwrap_or(data) so we also search the top-level object.
-    let src = CONTAINERS.iter()
-        .find_map(|k| data.get(*k))
-        .unwrap_or(data);
-
-    // Log every key inside the chosen source object so we can diagnose field-name mismatches.
-    if let Some(obj) = src.as_object() {
-        let keys: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
-        log::debug!("parse_extra_usage: src keys={:?}", keys);
-    }
-
-    // Spent amount (required — return None if absent).
-    const SPENT_KEYS: &[&str] = &[
-        "amount_spent", "spent", "total_spent", "amount", "current_spend",
-        "amount_usd", "total_usd", "spend", "usage_amount", "charged_amount",
-        "total_amount_spent", "metered_spend", "overage_amount",
-    ];
-    let spent = SPENT_KEYS.iter()
-        .find_map(|k| src.get(*k).and_then(|v| v.as_f64()))?;
-
-    const LIMIT_KEYS: &[&str] = &[
-        "spend_limit", "limit", "monthly_limit", "spending_limit",
-        "budget", "max_spend", "max_amount", "cap", "allowance",
-        "total_limit", "period_limit",
-    ];
-    let limit = LIMIT_KEYS.iter()
-        .find_map(|k| src.get(*k).and_then(|v| v.as_f64()))
-        .unwrap_or(0.0);
-
-    const BALANCE_KEYS: &[&str] = &[
-        "balance", "current_balance", "remaining", "remaining_balance",
-        "available_balance", "credit_balance", "credits", "available",
-    ];
-    let balance = BALANCE_KEYS.iter()
-        .find_map(|k| src.get(*k).and_then(|v| v.as_f64()))
-        .unwrap_or(0.0);
-
-    let percent_used = if limit > 0.0 {
-        (spent / limit * 100.0).min(100.0)
-    } else {
-        const PCT_KEYS: &[&str] = &["percent_used", "utilization", "percent", "usage_percent"];
-        PCT_KEYS.iter()
-            .find_map(|k| src.get(*k).and_then(|v| v.as_f64()))
-            .unwrap_or(0.0)
-    };
-
-    const RESETS_KEYS: &[&str] = &[
-        "resets_at", "reset_date", "reset_at", "period_end",
-        "billing_period_end", "cycle_end", "next_reset",
-    ];
-    let resets_at = RESETS_KEYS.iter()
-        .find_map(|k| src.get(*k).and_then(|v| v.as_str()))
-        .unwrap_or("")
-        .to_string();
-
-    const ENABLED_KEYS: &[&str] = &["enabled", "extra_usage_enabled", "active", "is_enabled", "on"];
-    let enabled = ENABLED_KEYS.iter()
-        .find_map(|k| src.get(*k).and_then(|v| v.as_bool()))
-        .unwrap_or(false);
-
-    const RELOAD_KEYS: &[&str] = &[
-        "auto_reload", "auto_reload_enabled", "auto_refill", "automatic_reload",
-    ];
-    let auto_reload = RELOAD_KEYS.iter()
-        .find_map(|k| src.get(*k).and_then(|v| v.as_bool()))
-        .unwrap_or(false);
-
+/// Parse extra usage from the nested `extra_usage` object inside /usage endpoint.
+/// Actual API fields: is_enabled, used_credits (cents), monthly_limit (cents), utilization (%)
+pub fn parse_usage_extra(data: &serde_json::Value) -> Option<ExtraUsage> {
+    let src = data.get("extra_usage")?;
+    // used_credits is required — without it there's nothing meaningful to show.
+    let used_credits = src.get("used_credits").and_then(|v| v.as_f64())?;
+    let monthly_limit = src.get("monthly_limit").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let utilization = src.get("utilization").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let enabled = src.get("is_enabled").and_then(|v| v.as_bool()).unwrap_or(false);
     Some(ExtraUsage {
         enabled,
-        spent,
-        limit,
-        balance,
-        percent_used,
-        resets_at,
-        auto_reload,
+        spent: used_credits / 100.0,        // credits = cents → dollars
+        limit: monthly_limit / 100.0,
+        balance: 0.0,                        // patched later from /prepaid/credits
+        percent_used: utilization,           // already in %
+        resets_at: String::new(),           // patched later from /subscription_details
+        auto_reload: false,                  // patched later from /prepaid/credits
     })
+}
+
+/// Parse prepaid credit balance and auto-reload flag from /prepaid/credits endpoint.
+/// Returns (balance_dollars, auto_reload_enabled).
+pub fn parse_prepaid_credits(data: &serde_json::Value) -> Option<(f64, bool)> {
+    let amount = data.get("amount").and_then(|v| v.as_f64())?;
+    let auto_reload = data
+        .get("auto_reload_settings")
+        .and_then(|s| s.get("enabled"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    Some((amount / 100.0, auto_reload))
 }
