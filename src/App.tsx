@@ -1,27 +1,29 @@
+import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 import { useUsage, ExtraUsage, PeriodUsage } from "./hooks/useUsage";
+import Settings from "./components/Settings";
 
 export default function App() {
   const { usage, loading, error, isLoggedIn, refetch } = useUsage();
+  const [showSettings, setShowSettings] = useState(false);
   // Focus-loss auto-hide is handled on the Rust side (on_window_event).
-  // JS onFocusChanged is unreliable with ActivationPolicy::Accessory.
 
   async function handleLogout() {
     try { await invoke("logout"); } catch (_) {}
   }
 
   return (
-    <div className="w-[360px] bg-white dark:bg-[#1c1c1e] overflow-hidden rounded-2xl shadow-2xl select-none">
+    <div className="w-[360px] h-screen bg-white dark:bg-[#1c1c1e] overflow-hidden rounded-2xl shadow-2xl select-none flex flex-col">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-black/10 dark:border-white/10">
+      <div className="flex-shrink-0 flex items-center justify-between px-4 py-3 border-b border-black/10 dark:border-white/10">
         <div className="flex items-center gap-2">
           <div className="w-5 h-5 bg-gradient-to-br from-orange-400 to-red-500 rounded-md flex items-center justify-center">
             <span className="text-white text-[10px] font-bold">C</span>
           </div>
           <div className="flex items-baseline gap-1.5">
             <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">Claude Usage</span>
-            {usage?.plan_type && (
+            {!showSettings && usage?.plan_type && (
               <span className="text-[10px] font-medium text-orange-500 dark:text-orange-400 uppercase tracking-wider">
                 {usage.plan_type}
               </span>
@@ -29,15 +31,28 @@ export default function App() {
           </div>
         </div>
         <div className="flex items-center gap-1.5">
+          {!showSettings && (
+            <button
+              onClick={refetch}
+              disabled={loading}
+              title="Refresh"
+              className="w-6 h-6 flex items-center justify-center rounded-full bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 text-gray-500 dark:text-gray-400 transition-colors disabled:opacity-40"
+            >
+              <RefreshIcon spinning={loading} />
+            </button>
+          )}
           <button
-            onClick={refetch}
-            disabled={loading}
-            title="Refresh"
-            className="w-6 h-6 flex items-center justify-center rounded-full bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 text-gray-500 dark:text-gray-400 transition-colors disabled:opacity-40"
+            onClick={() => setShowSettings(!showSettings)}
+            title={showSettings ? "Close settings" : "Settings"}
+            className={`w-6 h-6 flex items-center justify-center rounded-full transition-colors ${
+              showSettings
+                ? "bg-orange-500 text-white"
+                : "bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 text-gray-500 dark:text-gray-400"
+            }`}
           >
-            <RefreshIcon spinning={loading} />
+            <SettingsIcon />
           </button>
-          {isLoggedIn && (
+          {!showSettings && isLoggedIn && (
             <button onClick={handleLogout} title="Sign out"
               className="w-6 h-6 flex items-center justify-center rounded-full bg-black/5 dark:bg-white/5 hover:bg-red-100 dark:hover:bg-red-900/30 text-gray-500 dark:text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-colors"
             >
@@ -47,39 +62,48 @@ export default function App() {
         </div>
       </div>
 
-      {/* Content */}
-      <div className="px-4 py-4">
-        {error ? (
-          <ErrorState error={error} onRetry={refetch} />
-        ) : !isLoggedIn ? (
-          <NotLoggedInPrompt />
-        ) : loading && !usage ? (
-          <LoadingState />
-        ) : usage ? (
-          <div className="space-y-4">
-            {/* 5h + 7d circles */}
-            <div className="flex items-center justify-around">
-              <CircleGauge label="5-Hour" period={usage.five_hour} />
-              <div className="w-px h-16 bg-black/10 dark:bg-white/10" />
-              <CircleGauge label="7-Day" period={usage.seven_day} />
-            </div>
+      {showSettings ? (
+        /* Settings panel fills remaining space */
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <Settings onClose={() => setShowSettings(false)} />
+        </div>
+      ) : (
+        <>
+          {/* Content */}
+          <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3">
+            {error ? (
+              <ErrorState error={error} onRetry={refetch} />
+            ) : !isLoggedIn ? (
+              <NotLoggedInPrompt />
+            ) : loading && !usage ? (
+              <LoadingState />
+            ) : usage ? (
+              <div className="space-y-3">
+                {/* 5h + 7d circles */}
+                <div className="flex items-center justify-around">
+                  <CircleGauge label="5-Hour" period={usage.five_hour} />
+                  <div className="w-px h-16 bg-black/10 dark:bg-white/10" />
+                  <CircleGauge label="7-Day" period={usage.seven_day} />
+                </div>
 
-            {/* Extra usage */}
-            {usage.extra_usage && (
-              <ExtraUsageSection extra={usage.extra_usage} />
+                {/* Extra usage */}
+                {usage.extra_usage && (
+                  <ExtraUsageSection extra={usage.extra_usage} />
+                )}
+              </div>
+            ) : (
+              <LoadingState />
             )}
           </div>
-        ) : (
-          <LoadingState />
-        )}
-      </div>
 
-      {/* Footer */}
-      <div className="px-4 pb-3">
-        <p className="text-[10px] text-gray-400 dark:text-gray-500 text-center">
-          {usage?.fetched_at ? `Updated ${formatTime(usage.fetched_at)}` : "Claude Pro / Max Usage Monitor"}
-        </p>
-      </div>
+          {/* Footer */}
+          <div className="flex-shrink-0 px-4 pb-2.5">
+            <p className="text-[10px] text-gray-400 dark:text-gray-500 text-center">
+              {usage?.fetched_at ? `Updated ${formatTime(usage.fetched_at)}` : "Claude Pro / Max Usage Monitor"}
+            </p>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -104,21 +128,17 @@ function CircleGauge({ label, period }: { label: string; period: PeriodUsage }) 
   return (
     <div className="flex flex-col items-center gap-1">
       <svg width="88" height="88" viewBox="0 0 88 88">
-        {/* track */}
         <circle cx="44" cy="44" r={r} fill="none" stroke="currentColor"
           className="text-black/10 dark:text-white/10" strokeWidth="7" />
-        {/* progress */}
         <circle cx="44" cy="44" r={r} fill="none" stroke={color} strokeWidth="7"
           strokeDasharray={circ} strokeDashoffset={offset}
           strokeLinecap="round" transform="rotate(-90 44 44)"
           style={{ transition: "stroke-dashoffset 0.7s ease" }} />
-        {/* percentage */}
         <text x="44" y="40" textAnchor="middle" fill="currentColor"
           className="text-gray-800 dark:text-gray-100"
           style={{ fontSize: "15px", fontWeight: 700, fill: "currentColor" }}>
           {Math.round(pct)}%
         </text>
-        {/* label */}
         <text x="44" y="54" textAnchor="middle"
           style={{ fontSize: "9px", fill: "#9ca3af" }}>
           {label}
@@ -131,58 +151,45 @@ function CircleGauge({ label, period }: { label: string; period: PeriodUsage }) 
   );
 }
 
-// ── Extra usage section ─────────────────────────────────────────────────────
+// ── Extra usage section (compact) ───────────────────────────────────────────
 
 function ExtraUsageSection({ extra }: { extra: ExtraUsage }) {
   const pct = Math.min(extra.percent_used, 100);
   const barColor = pct >= 80 ? "bg-red-500" : pct >= 50 ? "bg-yellow-500" : "bg-blue-500";
 
-  const resetsLabel = (() => {
-    if (!extra.resets_at) return null;
+  const resetsLabel = extra.resets_at ? (() => {
     try {
       return new Date(extra.resets_at).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-    } catch {
-      return extra.resets_at;
-    }
-  })();
+    } catch { return extra.resets_at; }
+  })() : null;
 
   return (
-    <div className="border-t border-black/10 dark:border-white/10 pt-3 space-y-2">
+    <div className="border-t border-black/10 dark:border-white/10 pt-2.5 space-y-1.5">
+      {/* Title + badge + % */}
       <div className="flex items-center justify-between">
-        <span className="text-xs font-semibold text-gray-700 dark:text-gray-300">Extra Usage</span>
-        <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${extra.enabled ? "bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-400" : "bg-gray-100 text-gray-500 dark:bg-white/10 dark:text-gray-500"}`}>
-          {extra.enabled ? "On" : "Off"}
-        </span>
-      </div>
-
-      {/* Progress bar */}
-      <div className="space-y-1">
-        <div className="flex justify-between items-center">
-          <span className="text-xs text-gray-600 dark:text-gray-400">
-            ${extra.spent.toFixed(2)} spent{resetsLabel ? ` · resets ${resetsLabel}` : ""}
-          </span>
-          <span className="text-xs font-semibold text-gray-700 dark:text-gray-200">
-            {Math.round(pct)}%
+        <div className="flex items-center gap-1.5">
+          <span className="text-[11px] font-semibold text-gray-700 dark:text-gray-300">Extra Usage</span>
+          <span className={`text-[9px] font-medium px-1 py-0.5 rounded-full ${extra.enabled ? "bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-400" : "bg-gray-100 text-gray-500 dark:bg-white/10 dark:text-gray-500"}`}>
+            {extra.enabled ? "On" : "Off"}
           </span>
         </div>
-        <div className="h-2 bg-black/10 dark:bg-white/10 rounded-full overflow-hidden">
-          <div
-            className={`h-full rounded-full transition-all duration-700 ${barColor}`}
-            style={{ width: `${pct}%` }}
-          />
-        </div>
+        <span className="text-[11px] font-semibold text-gray-700 dark:text-gray-200">{Math.round(pct)}%</span>
       </div>
 
-      {/* Limit + balance */}
-      <div className="flex justify-between text-[11px] text-gray-500 dark:text-gray-400">
-        {extra.limit > 0 && (
-          <span>${extra.limit.toFixed(0)} monthly limit</span>
-        )}
+      {/* Thin progress bar */}
+      <div className="h-1.5 bg-black/10 dark:bg-white/10 rounded-full overflow-hidden">
+        <div className={`h-full rounded-full transition-all duration-700 ${barColor}`} style={{ width: `${pct}%` }} />
+      </div>
+
+      {/* One-line summary */}
+      <div className="flex justify-between text-[10px] text-gray-500 dark:text-gray-400">
         <span>
-          ${extra.balance.toFixed(2)} balance
-          {extra.auto_reload && (
-            <span className="ml-1 text-green-500 dark:text-green-400">· auto-reload</span>
-          )}
+          ${extra.spent.toFixed(2)} / ${extra.limit.toFixed(0)}
+          {resetsLabel ? ` · resets ${resetsLabel}` : ""}
+        </span>
+        <span>
+          ${extra.balance.toFixed(2)} bal
+          {extra.auto_reload && <span className="ml-1 text-green-500 dark:text-green-400">↻</span>}
         </span>
       </div>
     </div>
@@ -250,6 +257,16 @@ function RefreshIcon({ spinning }: { spinning: boolean }) {
       className={spinning ? "animate-spin" : ""}>
       <path d="M23 4v6h-6" />
       <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+    </svg>
+  );
+}
+
+function SettingsIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06-.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
     </svg>
   );
 }
