@@ -383,6 +383,7 @@ pub fn run() {
             commands::get_login_status,
             commands::open_login_window,
             commands::close_login_window,
+            commands::open_settings_window,
             commands::trigger_refresh,
             commands::logout,
             commands::get_settings,

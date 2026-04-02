@@ -1,29 +1,50 @@
-import { useState } from "react";
+import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import "./App.css";
 import { useUsage, ExtraUsage, PeriodUsage } from "./hooks/useUsage";
-import Settings from "./components/Settings";
 
 export default function App() {
   const { usage, loading, error, isLoggedIn, refetch } = useUsage();
-  const [showSettings, setShowSettings] = useState(false);
-  // Focus-loss auto-hide is handled on the Rust side (on_window_event).
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Auto-resize the window to fit content so there's no wasted space.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    let lastH = 0;
+    const sync = () => {
+      const h = el.scrollHeight;
+      if (h > 0 && h !== lastH) {
+        lastH = h;
+        getCurrentWindow().setSize({ type: "Logical", width: 360, height: h } as never).catch(() => {});
+      }
+    };
+    const ro = new ResizeObserver(sync);
+    ro.observe(el);
+    sync();
+    return () => ro.disconnect();
+  }, []);
 
   async function handleLogout() {
     try { await invoke("logout"); } catch (_) {}
   }
 
+  async function openSettings() {
+    try { await invoke("open_settings_window"); } catch (_) {}
+  }
+
   return (
-    <div className="w-[360px] h-screen bg-white dark:bg-[#1c1c1e] overflow-hidden rounded-2xl shadow-2xl select-none flex flex-col">
+    <div ref={containerRef} className="w-[360px] bg-white dark:bg-[#1c1c1e] overflow-hidden rounded-2xl shadow-2xl select-none">
       {/* Header */}
-      <div className="flex-shrink-0 flex items-center justify-between px-4 py-3 border-b border-black/10 dark:border-white/10">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-black/10 dark:border-white/10">
         <div className="flex items-center gap-2">
           <div className="w-5 h-5 bg-gradient-to-br from-orange-400 to-red-500 rounded-md flex items-center justify-center">
             <span className="text-white text-[10px] font-bold">C</span>
           </div>
           <div className="flex items-baseline gap-1.5">
             <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">Claude Usage</span>
-            {!showSettings && usage?.plan_type && (
+            {usage?.plan_type && (
               <span className="text-[10px] font-medium text-orange-500 dark:text-orange-400 uppercase tracking-wider">
                 {usage.plan_type}
               </span>
@@ -31,28 +52,22 @@ export default function App() {
           </div>
         </div>
         <div className="flex items-center gap-1.5">
-          {!showSettings && (
-            <button
-              onClick={refetch}
-              disabled={loading}
-              title="Refresh"
-              className="w-6 h-6 flex items-center justify-center rounded-full bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 text-gray-500 dark:text-gray-400 transition-colors disabled:opacity-40"
-            >
-              <RefreshIcon spinning={loading} />
-            </button>
-          )}
           <button
-            onClick={() => setShowSettings(!showSettings)}
-            title={showSettings ? "Close settings" : "Settings"}
-            className={`w-6 h-6 flex items-center justify-center rounded-full transition-colors ${
-              showSettings
-                ? "bg-orange-500 text-white"
-                : "bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 text-gray-500 dark:text-gray-400"
-            }`}
+            onClick={refetch}
+            disabled={loading}
+            title="Refresh"
+            className="w-6 h-6 flex items-center justify-center rounded-full bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 text-gray-500 dark:text-gray-400 transition-colors disabled:opacity-40"
+          >
+            <RefreshIcon spinning={loading} />
+          </button>
+          <button
+            onClick={openSettings}
+            title="Settings"
+            className="w-6 h-6 flex items-center justify-center rounded-full bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 text-gray-500 dark:text-gray-400 transition-colors"
           >
             <SettingsIcon />
           </button>
-          {!showSettings && isLoggedIn && (
+          {isLoggedIn && (
             <button onClick={handleLogout} title="Sign out"
               className="w-6 h-6 flex items-center justify-center rounded-full bg-black/5 dark:bg-white/5 hover:bg-red-100 dark:hover:bg-red-900/30 text-gray-500 dark:text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-colors"
             >
@@ -62,48 +77,39 @@ export default function App() {
         </div>
       </div>
 
-      {showSettings ? (
-        /* Settings panel fills remaining space */
-        <div className="flex-1 min-h-0 overflow-hidden">
-          <Settings onClose={() => setShowSettings(false)} />
-        </div>
-      ) : (
-        <>
-          {/* Content */}
-          <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3">
-            {error ? (
-              <ErrorState error={error} onRetry={refetch} />
-            ) : !isLoggedIn ? (
-              <NotLoggedInPrompt />
-            ) : loading && !usage ? (
-              <LoadingState />
-            ) : usage ? (
-              <div className="space-y-3">
-                {/* 5h + 7d circles */}
-                <div className="flex items-center justify-around">
-                  <CircleGauge label="5-Hour" period={usage.five_hour} />
-                  <div className="w-px h-16 bg-black/10 dark:bg-white/10" />
-                  <CircleGauge label="7-Day" period={usage.seven_day} />
-                </div>
+      {/* Content */}
+      <div className="px-4 py-4">
+        {error ? (
+          <ErrorState error={error} onRetry={refetch} />
+        ) : !isLoggedIn ? (
+          <NotLoggedInPrompt />
+        ) : loading && !usage ? (
+          <LoadingState />
+        ) : usage ? (
+          <div className="space-y-4">
+            {/* 5h + 7d circles */}
+            <div className="flex items-center justify-around">
+              <CircleGauge label="5-Hour" period={usage.five_hour} />
+              <div className="w-px h-16 bg-black/10 dark:bg-white/10" />
+              <CircleGauge label="7-Day" period={usage.seven_day} />
+            </div>
 
-                {/* Extra usage */}
-                {usage.extra_usage && (
-                  <ExtraUsageSection extra={usage.extra_usage} />
-                )}
-              </div>
-            ) : (
-              <LoadingState />
+            {/* Extra usage */}
+            {usage.extra_usage && (
+              <ExtraUsageSection extra={usage.extra_usage} />
             )}
           </div>
+        ) : (
+          <LoadingState />
+        )}
+      </div>
 
-          {/* Footer */}
-          <div className="flex-shrink-0 px-4 pb-2.5">
-            <p className="text-[10px] text-gray-400 dark:text-gray-500 text-center">
-              {usage?.fetched_at ? `Updated ${formatTime(usage.fetched_at)}` : "Claude Pro / Max Usage Monitor"}
-            </p>
-          </div>
-        </>
-      )}
+      {/* Footer */}
+      <div className="px-4 pb-3">
+        <p className="text-[10px] text-gray-400 dark:text-gray-500 text-center">
+          {usage?.fetched_at ? `Updated ${formatTime(usage.fetched_at)}` : "Claude Pro / Max Usage Monitor"}
+        </p>
+      </div>
     </div>
   );
 }
@@ -151,45 +157,58 @@ function CircleGauge({ label, period }: { label: string; period: PeriodUsage }) 
   );
 }
 
-// ── Extra usage section (compact) ───────────────────────────────────────────
+// ── Extra usage section (original 4-row style) ──────────────────────────────
 
 function ExtraUsageSection({ extra }: { extra: ExtraUsage }) {
   const pct = Math.min(extra.percent_used, 100);
   const barColor = pct >= 80 ? "bg-red-500" : pct >= 50 ? "bg-yellow-500" : "bg-blue-500";
 
-  const resetsLabel = extra.resets_at ? (() => {
+  const resetsLabel = (() => {
+    if (!extra.resets_at) return null;
     try {
       return new Date(extra.resets_at).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-    } catch { return extra.resets_at; }
-  })() : null;
+    } catch {
+      return extra.resets_at;
+    }
+  })();
 
   return (
-    <div className="border-t border-black/10 dark:border-white/10 pt-2.5 space-y-1.5">
-      {/* Title + badge + % */}
+    <div className="border-t border-black/10 dark:border-white/10 pt-3 space-y-2">
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-1.5">
-          <span className="text-[11px] font-semibold text-gray-700 dark:text-gray-300">Extra Usage</span>
-          <span className={`text-[9px] font-medium px-1 py-0.5 rounded-full ${extra.enabled ? "bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-400" : "bg-gray-100 text-gray-500 dark:bg-white/10 dark:text-gray-500"}`}>
-            {extra.enabled ? "On" : "Off"}
+        <span className="text-xs font-semibold text-gray-700 dark:text-gray-300">Extra Usage</span>
+        <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${extra.enabled ? "bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-400" : "bg-gray-100 text-gray-500 dark:bg-white/10 dark:text-gray-500"}`}>
+          {extra.enabled ? "On" : "Off"}
+        </span>
+      </div>
+
+      {/* Progress bar */}
+      <div className="space-y-1">
+        <div className="flex justify-between items-center">
+          <span className="text-xs text-gray-600 dark:text-gray-400">
+            ${extra.spent.toFixed(2)} spent{resetsLabel ? ` · resets ${resetsLabel}` : ""}
+          </span>
+          <span className="text-xs font-semibold text-gray-700 dark:text-gray-200">
+            {Math.round(pct)}%
           </span>
         </div>
-        <span className="text-[11px] font-semibold text-gray-700 dark:text-gray-200">{Math.round(pct)}%</span>
+        <div className="h-2 bg-black/10 dark:bg-white/10 rounded-full overflow-hidden">
+          <div
+            className={`h-full rounded-full transition-all duration-700 ${barColor}`}
+            style={{ width: `${pct}%` }}
+          />
+        </div>
       </div>
 
-      {/* Thin progress bar */}
-      <div className="h-1.5 bg-black/10 dark:bg-white/10 rounded-full overflow-hidden">
-        <div className={`h-full rounded-full transition-all duration-700 ${barColor}`} style={{ width: `${pct}%` }} />
-      </div>
-
-      {/* One-line summary */}
-      <div className="flex justify-between text-[10px] text-gray-500 dark:text-gray-400">
+      {/* Limit + balance */}
+      <div className="flex justify-between text-[11px] text-gray-500 dark:text-gray-400">
+        {extra.limit > 0 && (
+          <span>${extra.limit.toFixed(0)} monthly limit</span>
+        )}
         <span>
-          ${extra.spent.toFixed(2)} / ${extra.limit.toFixed(0)}
-          {resetsLabel ? ` · resets ${resetsLabel}` : ""}
-        </span>
-        <span>
-          ${extra.balance.toFixed(2)} bal
-          {extra.auto_reload && <span className="ml-1 text-green-500 dark:text-green-400">↻</span>}
+          ${extra.balance.toFixed(2)} balance
+          {extra.auto_reload && (
+            <span className="ml-1 text-green-500 dark:text-green-400">· auto-reload</span>
+          )}
         </span>
       </div>
     </div>

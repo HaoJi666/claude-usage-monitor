@@ -122,6 +122,33 @@ pub fn save_settings(settings: AppSettings, state: State<'_, AppState>) -> Resul
 // Using direct command invocation instead of plugin:event|emit because
 // plugin events from external webviews are unreliable in Tauri 2.0.
 
+#[tauri::command]
+pub fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
+    // Re-use the window if it already exists.
+    if let Some(win) = app.get_webview_window("settings") {
+        win.show().map_err(|e| e.to_string())?;
+        win.set_focus().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    let app2 = app.clone();
+    app.run_on_main_thread(move || {
+        match tauri::WebviewWindowBuilder::new(
+            &app2,
+            "settings",
+            tauri::WebviewUrl::App("index.html".into()),
+        )
+        .title("Settings")
+        .inner_size(400.0, 560.0)
+        .resizable(true)
+        .build()
+        {
+            Ok(_) => log::info!("open_settings_window: created"),
+            Err(e) => log::error!("open_settings_window: failed: {}", e),
+        }
+    })
+    .map_err(|e| format!("{e}"))
+}
+
 /// Called by the JS URL monitor every 500 ms when the URL changes.
 /// Detects login state changes including SPA navigation (history.pushState)
 /// which does not trigger the Rust on_page_load callback.
