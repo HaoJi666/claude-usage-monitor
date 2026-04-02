@@ -176,6 +176,20 @@ pub fn cm_api_data(
     let data_val: serde_json::Value =
         serde_json::from_str(&data).map_err(|e| e.to_string())?;
 
+    // Dump the full response for usage/organizations URLs so we can see the real structure.
+    {
+        let u = url.as_str();
+        let is_usage_url = u.contains("/api/usage") || u.contains("/api/organizations")
+            || u.contains("/api/account") || u.contains("usage_limit");
+        if is_usage_url {
+            let raw = serde_json::to_string(&data_val).unwrap_or_default();
+            log::info!(
+                "cm_api_data DUMP url={} len={} body={}",
+                url, raw.len(), &raw[..raw.len().min(4000)]
+            );
+        }
+    }
+
     // Always try to extract extra_usage from every captured response,
     // since it may arrive from a billing/credits endpoint separately.
     if let Some(extra) = crate::api::claude_ai::parse_extra_usage(&data_val) {

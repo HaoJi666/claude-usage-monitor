@@ -82,58 +82,76 @@ fn parse_period(v: &serde_json::Value) -> Option<PeriodUsage> {
 }
 
 pub fn parse_extra_usage(data: &serde_json::Value) -> Option<ExtraUsage> {
-    // Try top-level or nested under "extra_usage" / "overage"
-    let src = data
-        .get("extra_usage")
-        .or_else(|| data.get("overage"))
+    // Try all plausible container key names (any may be the real one).
+    const CONTAINERS: &[&str] = &[
+        "extra_usage", "overage", "metered_usage", "pay_as_you_go",
+        "addon_usage", "addons", "billing_usage", "credit_usage",
+    ];
+    // unwrap_or(data) so we also search the top-level object.
+    let src = CONTAINERS.iter()
+        .find_map(|k| data.get(*k))
         .unwrap_or(data);
 
-    // Must have at least a spend or balance field to be considered valid.
-    let spent = src
-        .get("amount_spent")
-        .or_else(|| src.get("spent"))
-        .or_else(|| src.get("total_spent"))
-        .and_then(|v| v.as_f64())?;
+    // Log every key inside the chosen source object so we can diagnose field-name mismatches.
+    if let Some(obj) = src.as_object() {
+        let keys: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
+        log::debug!("parse_extra_usage: src keys={:?}", keys);
+    }
 
-    let limit = src
-        .get("spend_limit")
-        .or_else(|| src.get("limit"))
-        .or_else(|| src.get("monthly_limit"))
-        .and_then(|v| v.as_f64())
+    // Spent amount (required — return None if absent).
+    const SPENT_KEYS: &[&str] = &[
+        "amount_spent", "spent", "total_spent", "amount", "current_spend",
+        "amount_usd", "total_usd", "spend", "usage_amount", "charged_amount",
+        "total_amount_spent", "metered_spend", "overage_amount",
+    ];
+    let spent = SPENT_KEYS.iter()
+        .find_map(|k| src.get(*k).and_then(|v| v.as_f64()))?;
+
+    const LIMIT_KEYS: &[&str] = &[
+        "spend_limit", "limit", "monthly_limit", "spending_limit",
+        "budget", "max_spend", "max_amount", "cap", "allowance",
+        "total_limit", "period_limit",
+    ];
+    let limit = LIMIT_KEYS.iter()
+        .find_map(|k| src.get(*k).and_then(|v| v.as_f64()))
         .unwrap_or(0.0);
 
-    let balance = src
-        .get("balance")
-        .or_else(|| src.get("current_balance"))
-        .and_then(|v| v.as_f64())
+    const BALANCE_KEYS: &[&str] = &[
+        "balance", "current_balance", "remaining", "remaining_balance",
+        "available_balance", "credit_balance", "credits", "available",
+    ];
+    let balance = BALANCE_KEYS.iter()
+        .find_map(|k| src.get(*k).and_then(|v| v.as_f64()))
         .unwrap_or(0.0);
 
     let percent_used = if limit > 0.0 {
         (spent / limit * 100.0).min(100.0)
     } else {
-        src.get("percent_used")
-            .or_else(|| src.get("utilization"))
-            .and_then(|v| v.as_f64())
+        const PCT_KEYS: &[&str] = &["percent_used", "utilization", "percent", "usage_percent"];
+        PCT_KEYS.iter()
+            .find_map(|k| src.get(*k).and_then(|v| v.as_f64()))
             .unwrap_or(0.0)
     };
 
-    let resets_at = src
-        .get("resets_at")
-        .or_else(|| src.get("reset_date"))
-        .and_then(|v| v.as_str())
+    const RESETS_KEYS: &[&str] = &[
+        "resets_at", "reset_date", "reset_at", "period_end",
+        "billing_period_end", "cycle_end", "next_reset",
+    ];
+    let resets_at = RESETS_KEYS.iter()
+        .find_map(|k| src.get(*k).and_then(|v| v.as_str()))
         .unwrap_or("")
         .to_string();
 
-    let enabled = src
-        .get("enabled")
-        .or_else(|| src.get("extra_usage_enabled"))
-        .and_then(|v| v.as_bool())
+    const ENABLED_KEYS: &[&str] = &["enabled", "extra_usage_enabled", "active", "is_enabled", "on"];
+    let enabled = ENABLED_KEYS.iter()
+        .find_map(|k| src.get(*k).and_then(|v| v.as_bool()))
         .unwrap_or(false);
 
-    let auto_reload = src
-        .get("auto_reload")
-        .or_else(|| src.get("auto_reload_enabled"))
-        .and_then(|v| v.as_bool())
+    const RELOAD_KEYS: &[&str] = &[
+        "auto_reload", "auto_reload_enabled", "auto_refill", "automatic_reload",
+    ];
+    let auto_reload = RELOAD_KEYS.iter()
+        .find_map(|k| src.get(*k).and_then(|v| v.as_bool()))
         .unwrap_or(false);
 
     Some(ExtraUsage {
