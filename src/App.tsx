@@ -77,7 +77,7 @@ export default function App() {
       {/* Footer */}
       <div className="px-4 pb-3">
         <p className="text-[10px] text-gray-400 dark:text-gray-500 text-center">
-          Claude Pro / Max Usage Monitor
+          {usage?.fetched_at ? `Updated ${formatTime(usage.fetched_at)}` : "Claude Pro / Max Usage Monitor"}
         </p>
       </div>
     </div>
@@ -263,4 +263,14 @@ function LogoutIcon() {
       <line x1="21" y1="12" x2="9" y2="12" />
     </svg>
   );
+}
+
+function formatTime(iso: string): string {
+  try {
+    return new Date(iso).toLocaleTimeString(undefined, {
+      hour: "2-digit", minute: "2-digit", second: "2-digit",
+    });
+  } catch {
+    return iso;
+  }
 }
