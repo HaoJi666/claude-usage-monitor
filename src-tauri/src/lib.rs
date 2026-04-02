@@ -2,6 +2,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use tauri::{
+    menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Emitter, Manager,
 };
@@ -107,7 +108,11 @@ const FETCH_INTERCEPTOR_JS: &str = r#"
         u.indexOf('/api/organizations')  !== -1 ||
         u.indexOf('/api/account')        !== -1 ||
         u.indexOf('usage_limit')         !== -1 ||
-        u.indexOf('rate_limit')          !== -1
+        u.indexOf('rate_limit')          !== -1 ||
+        u.indexOf('/api/billing')        !== -1 ||
+        u.indexOf('/api/credits')        !== -1 ||
+        u.indexOf('extra_usage')         !== -1 ||
+        u.indexOf('overage')             !== -1
       );
 
       if (resp.ok && hit) {
@@ -179,6 +184,7 @@ pub struct AppState {
     pub db: Mutex<rusqlite::Connection>,
     pub http_client: reqwest::Client,
     pub latest_usage: Mutex<Option<api::claude_ai::ProUsageData>>,
+    pub latest_extra: Mutex<Option<api::claude_ai::ExtraUsage>>,
     pub is_logged_in: Mutex<bool>,
     pub session_email: Mutex<Option<String>>,
 }
@@ -199,6 +205,10 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            // ── macOS: hide from Dock, appear only in menu bar ────────
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
             // ── Database ──────────────────────────────────────────────
             let db_path = get_db_path(app.handle());
             let conn = rusqlite::Connection::open(&db_path)
@@ -214,6 +224,7 @@ pub fn run() {
                 db: Mutex::new(conn),
                 http_client,
                 latest_usage: Mutex::new(None),
+                latest_extra: Mutex::new(None),
                 is_logged_in: Mutex::new(false),
                 session_email: Mutex::new(None),
             });
@@ -272,12 +283,36 @@ pub fn run() {
             })
             .build()?;
 
+            // ── Auto-hide main window on focus loss (Rust-side) ──────
+            // JS onFocusChanged is unreliable with ActivationPolicy::Accessory.
+            // Listening at the native window-event level works regardless.
+            if let Some(main_win) = app.get_webview_window("main") {
+                let win_clone = main_win.clone();
+                main_win.on_window_event(move |event| {
+                    if let tauri::WindowEvent::Focused(false) = event {
+                        let _ = win_clone.hide();
+                    }
+                });
+            }
+
             // ── Tray icon ─────────────────────────────────────────────
+            // Right-click context menu with Exit option.
+            let quit_item = MenuItem::with_id(app, "quit", "Exit App", true, None::<&str>)?;
+            let tray_menu = Menu::new(app)?;
+            tray_menu.append(&quit_item)?;
+
             TrayIconBuilder::with_id("main-tray")
                 .icon(app.default_window_icon().unwrap().clone())
                 .icon_as_template(true)
                 .title("Claude")
                 .tooltip("Claude Usage Monitor")
+                .menu(&tray_menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| {
+                    if event.id() == "quit" {
+                        app.exit(0);
+                    }
+                })
                 .on_tray_icon_event(|tray, event| {
                     if let TrayIconEvent::Click {
                         button: MouseButton::Left,
@@ -294,7 +329,7 @@ pub fn run() {
                                 let cx = position.x as i32;
                                 let cy = position.y as i32;
                                 let _ = window.set_position(tauri::PhysicalPosition::new(
-                                    (cx - 200).max(0),
+                                    (cx - 180).max(0),
                                     cy + 4,
                                 ));
                                 let _ = window.show();
@@ -348,6 +383,7 @@ pub fn run() {
             commands::get_login_status,
             commands::open_login_window,
             commands::close_login_window,
+            commands::open_settings_window,
             commands::trigger_refresh,
             commands::logout,
             commands::get_settings,

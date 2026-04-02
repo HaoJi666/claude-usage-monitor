@@ -32,8 +32,16 @@ impl Default for AppSettings {
 
 #[tauri::command]
 pub fn get_usage(state: State<'_, AppState>) -> Result<Option<ProUsageData>, String> {
-    let guard = state.latest_usage.lock().map_err(|e| e.to_string())?;
-    Ok(guard.clone())
+    let mut usage = state.latest_usage.lock().map_err(|e| e.to_string())?.clone();
+    // Merge separately-stored extra_usage if the main response didn't include it.
+    if let Some(u) = usage.as_mut() {
+        if u.extra_usage.is_none() {
+            if let Ok(extra_guard) = state.latest_extra.lock() {
+                u.extra_usage = extra_guard.clone();
+            }
+        }
+    }
+    Ok(usage)
 }
 
 #[tauri::command]
@@ -114,6 +122,33 @@ pub fn save_settings(settings: AppSettings, state: State<'_, AppState>) -> Resul
 // Using direct command invocation instead of plugin:event|emit because
 // plugin events from external webviews are unreliable in Tauri 2.0.
 
+#[tauri::command]
+pub fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
+    // Re-use the window if it already exists.
+    if let Some(win) = app.get_webview_window("settings") {
+        win.show().map_err(|e| e.to_string())?;
+        win.set_focus().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    let app2 = app.clone();
+    app.run_on_main_thread(move || {
+        match tauri::WebviewWindowBuilder::new(
+            &app2,
+            "settings",
+            tauri::WebviewUrl::App("index.html".into()),
+        )
+        .title("Settings")
+        .inner_size(400.0, 560.0)
+        .resizable(true)
+        .build()
+        {
+            Ok(_) => log::info!("open_settings_window: created"),
+            Err(e) => log::error!("open_settings_window: failed: {}", e),
+        }
+    })
+    .map_err(|e| format!("{e}"))
+}
+
 /// Called by the JS URL monitor every 500 ms when the URL changes.
 /// Detects login state changes including SPA navigation (history.pushState)
 /// which does not trigger the Rust on_page_load callback.
@@ -168,7 +203,17 @@ pub fn cm_api_data(
     let data_val: serde_json::Value =
         serde_json::from_str(&data).map_err(|e| e.to_string())?;
 
+    // ── /usage endpoint: extract 5h/7d quota AND extra_usage ─────────────────
     if let Some(usage) = crate::api::claude_ai::parse_usage(&url, &data_val) {
+        // Also parse the nested extra_usage object from the same response.
+        if let Some(extra) = crate::api::claude_ai::parse_usage_extra(&data_val) {
+            log::info!(
+                "cm_api_data: extra_usage — enabled={} spent={:.2} limit={:.2} util={:.1}%",
+                extra.enabled, extra.spent, extra.limit, extra.percent_used
+            );
+            *state.latest_extra.lock().map_err(|e| e.to_string())? = Some(extra);
+        }
+
         log::info!(
             "cm_api_data: 5h={:.1}%  7d={:.1}%",
             usage.five_hour.utilization,
@@ -203,13 +248,57 @@ pub fn cm_api_data(
             )));
         }
 
-        let _ = app.emit("usage-updated", &usage);
-    } else {
-        // Log at info level so we can diagnose API format mismatches.
-        let keys: Vec<&str> = data_val.as_object()
-            .map(|m| m.keys().map(|k| k.as_str()).collect())
-            .unwrap_or_default();
-        log::info!("cm_api_data: no usage parsed from url={} top_keys={:?}", url, keys);
+        // Emit with extra_usage merged from latest_extra (balance may be 0 until
+        // /prepaid/credits arrives, which triggers another emit shortly after).
+        let mut usage_to_emit = usage.clone();
+        if let Ok(extra_guard) = state.latest_extra.lock() {
+            usage_to_emit.extra_usage = extra_guard.clone();
+        }
+        let _ = app.emit("usage-updated", &usage_to_emit);
+    }
+
+    // ── /prepaid/credits: patch balance + auto_reload into latest_extra ───────
+    if url.contains("/prepaid/credits") {
+        if let Some((balance, auto_reload)) = crate::api::claude_ai::parse_prepaid_credits(&data_val) {
+            log::info!(
+                "cm_api_data: prepaid/credits — balance={:.2} auto_reload={}",
+                balance, auto_reload
+            );
+            // Update latest_extra in place; clone the result for the re-emit.
+            let updated_extra = {
+                let mut guard = state.latest_extra.lock().map_err(|e| e.to_string())?;
+                if let Some(ref mut extra) = *guard {
+                    extra.balance = balance;
+                    extra.auto_reload = auto_reload;
+                } else {
+                    // /prepaid/credits arrived before /usage — store partial.
+                    *guard = Some(crate::api::claude_ai::ExtraUsage {
+                        enabled: false, spent: 0.0, limit: 0.0,
+                        balance, percent_used: 0.0,
+                        resets_at: String::new(), auto_reload,
+                    });
+                }
+                guard.clone()
+            }; // lock released
+
+            // Re-emit usage-updated so the frontend gets the real balance.
+            if let Some(mut usage) = state.latest_usage.lock().ok().and_then(|g| g.clone()) {
+                usage.extra_usage = updated_extra;
+                let _ = app.emit("usage-updated", &usage);
+            }
+        }
+    }
+
+    // ── /subscription_details: patch billing-cycle reset date ────────────────
+    if url.contains("/subscription_details") {
+        if let Some(date) = data_val.get("next_charge_date").and_then(|v| v.as_str()) {
+            let resets_at = format!("{}T00:00:00Z", date);
+            log::info!("cm_api_data: subscription_details — next_charge_date={}", date);
+            let mut guard = state.latest_extra.lock().map_err(|e| e.to_string())?;
+            if let Some(ref mut extra) = *guard {
+                extra.resets_at = resets_at;
+            }
+        }
     }
 
     Ok(())

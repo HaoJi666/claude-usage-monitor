@@ -1,87 +1,75 @@
-import { useEffect } from "react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import "./App.css";
-import { useUsage } from "./hooks/useUsage";
-import UsageCard from "./components/UsageCard";
+import { useUsage, ExtraUsage, PeriodUsage } from "./hooks/useUsage";
 
 export default function App() {
   const { usage, loading, error, isLoggedIn, refetch } = useUsage();
+  const containerRef = useRef<HTMLDivElement>(null);
 
-  // Hide window when it loses focus
+  // Auto-resize the window to fit content so there's no wasted space.
   useEffect(() => {
-    const win = getCurrentWindow();
-    const unlisten = win.onFocusChanged(({ payload: focused }) => {
-      if (!focused) win.hide();
-    });
-    return () => { unlisten.then((fn) => fn()); };
+    const el = containerRef.current;
+    if (!el) return;
+    let lastH = 0;
+    const sync = () => {
+      const h = el.scrollHeight;
+      if (h > 0 && h !== lastH) {
+        lastH = h;
+        getCurrentWindow().setSize({ type: "Logical", width: 360, height: h } as never).catch(() => {});
+      }
+    };
+    const ro = new ResizeObserver(sync);
+    ro.observe(el);
+    sync();
+    return () => ro.disconnect();
   }, []);
 
   async function handleLogout() {
-    try {
-      await invoke("logout");
-    } catch (_) {}
+    try { await invoke("logout"); } catch (_) {}
+  }
+
+  async function openSettings() {
+    try { await invoke("open_settings_window"); } catch (_) {}
   }
 
   return (
-    <div className="w-[400px] h-[600px] flex flex-col bg-white dark:bg-[#1c1c1e] overflow-hidden rounded-2xl shadow-2xl">
-      <MainView
-        usage={usage}
-        loading={loading}
-        error={error}
-        isLoggedIn={isLoggedIn}
-        onRefresh={refetch}
-        onLogout={handleLogout}
-      />
-    </div>
-  );
-}
-
-interface MainViewProps {
-  usage: ReturnType<typeof useUsage>["usage"];
-  loading: boolean;
-  error: string | null;
-  isLoggedIn: boolean;
-  onRefresh: () => void;
-  onLogout: () => void;
-}
-
-function MainView({ usage, loading, error, isLoggedIn, onRefresh, onLogout }: MainViewProps) {
-  const planBadge = usage?.plan_type ?? null;
-
-  return (
-    <div className="flex flex-col h-full">
+    <div ref={containerRef} className="w-[360px] bg-white dark:bg-[#1c1c1e] overflow-hidden rounded-2xl shadow-2xl select-none">
       {/* Header */}
-      <div className="flex items-center justify-between px-5 py-4 border-b border-black/10 dark:border-white/10">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-black/10 dark:border-white/10">
         <div className="flex items-center gap-2">
-          <div className="w-6 h-6 bg-gradient-to-br from-orange-400 to-red-500 rounded-md flex items-center justify-center">
-            <span className="text-white text-xs font-bold">C</span>
+          <div className="w-5 h-5 bg-gradient-to-br from-orange-400 to-red-500 rounded-md flex items-center justify-center">
+            <span className="text-white text-[10px] font-bold">C</span>
           </div>
-          <div>
-            <h1 className="text-base font-semibold text-gray-900 dark:text-gray-100 leading-tight">
-              Claude Usage
-            </h1>
-            {planBadge && (
+          <div className="flex items-baseline gap-1.5">
+            <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">Claude Usage</span>
+            {usage?.plan_type && (
               <span className="text-[10px] font-medium text-orange-500 dark:text-orange-400 uppercase tracking-wider">
-                {planBadge}
+                {usage.plan_type}
               </span>
             )}
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
           <button
-            onClick={onRefresh}
+            onClick={refetch}
             disabled={loading}
             title="Refresh"
-            className="w-7 h-7 flex items-center justify-center rounded-full bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 text-gray-600 dark:text-gray-400 transition-colors disabled:opacity-40"
+            className="w-6 h-6 flex items-center justify-center rounded-full bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 text-gray-500 dark:text-gray-400 transition-colors disabled:opacity-40"
           >
             <RefreshIcon spinning={loading} />
           </button>
+          <button
+            onClick={openSettings}
+            title="Settings"
+            className="w-6 h-6 flex items-center justify-center rounded-full bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 text-gray-500 dark:text-gray-400 transition-colors"
+          >
+            <SettingsIcon />
+          </button>
           {isLoggedIn && (
-            <button
-              onClick={onLogout}
-              title="Sign out"
-              className="w-7 h-7 flex items-center justify-center rounded-full bg-black/5 dark:bg-white/5 hover:bg-red-100 dark:hover:bg-red-900/30 text-gray-600 dark:text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-colors"
+            <button onClick={handleLogout} title="Sign out"
+              className="w-6 h-6 flex items-center justify-center rounded-full bg-black/5 dark:bg-white/5 hover:bg-red-100 dark:hover:bg-red-900/30 text-gray-500 dark:text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-colors"
             >
               <LogoutIcon />
             </button>
@@ -90,121 +78,191 @@ function MainView({ usage, loading, error, isLoggedIn, onRefresh, onLogout }: Ma
       </div>
 
       {/* Content */}
-      <div className="flex-1 flex flex-col items-center justify-center px-5 py-6 gap-6">
+      <div className="px-4 py-4">
         {error ? (
-          <ErrorState error={error} onRetry={onRefresh} />
+          <ErrorState error={error} onRetry={refetch} />
         ) : !isLoggedIn ? (
           <NotLoggedInPrompt />
         ) : loading && !usage ? (
           <LoadingState />
         ) : usage ? (
-          <>
-            <p className="text-xs text-gray-500 dark:text-gray-400 font-medium uppercase tracking-wider">
-              Current Usage
-            </p>
-            <div className="flex gap-8 items-center justify-center">
-              <UsageCard label="5-Hour" usage={usage.five_hour} />
-              <div className="w-px h-20 bg-black/10 dark:bg-white/10" />
-              <UsageCard label="7-Day" usage={usage.seven_day} />
+          <div className="space-y-4">
+            {/* 5h + 7d circles */}
+            <div className="flex items-center justify-around">
+              <CircleGauge label="5-Hour" period={usage.five_hour} />
+              <div className="w-px h-16 bg-black/10 dark:bg-white/10" />
+              <CircleGauge label="7-Day" period={usage.seven_day} />
             </div>
 
-            <div className="w-full space-y-3 mt-2">
-              <UsageBar label="5-Hour Period" percent={usage.five_hour.utilization} />
-              <UsageBar label="7-Day Period" percent={usage.seven_day.utilization} />
-            </div>
-          </>
+            {/* Extra usage */}
+            {usage.extra_usage && (
+              <ExtraUsageSection extra={usage.extra_usage} />
+            )}
+          </div>
         ) : (
           <LoadingState />
         )}
       </div>
 
       {/* Footer */}
-      <div className="px-5 py-3 border-t border-black/10 dark:border-white/10">
-        <p className="text-xs text-gray-400 dark:text-gray-500 text-center">
-          Claude Pro / Max Usage Monitor
+      <div className="px-4 pb-3">
+        <p className="text-[10px] text-gray-400 dark:text-gray-500 text-center">
+          {usage?.fetched_at ? `Updated ${formatTime(usage.fetched_at)}` : "Claude Pro / Max Usage Monitor"}
         </p>
       </div>
     </div>
   );
 }
 
-function NotLoggedInPrompt() {
-  async function openLogin() {
+// ── Circular gauge ──────────────────────────────────────────────────────────
+
+function CircleGauge({ label, period }: { label: string; period: PeriodUsage }) {
+  const pct = Math.min(period.utilization, 100);
+  const r = 34;
+  const circ = 2 * Math.PI * r;
+  const offset = circ - (pct / 100) * circ;
+  const color = pct >= 80 ? "#ef4444" : pct >= 50 ? "#eab308" : "#10b981";
+
+  const resetsDate = (() => {
     try {
-      await invoke("open_login_window");
-    } catch (_) {}
-  }
+      return new Date(period.resets_at).toLocaleDateString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+    } catch {
+      return period.resets_at;
+    }
+  })();
 
   return (
-    <div className="flex flex-col items-center gap-4 text-center px-4">
-      <div className="w-14 h-14 bg-orange-100 dark:bg-orange-900/30 rounded-full flex items-center justify-center">
-        <span className="text-3xl">☁</span>
+    <div className="flex flex-col items-center gap-1">
+      <svg width="88" height="88" viewBox="0 0 88 88">
+        <circle cx="44" cy="44" r={r} fill="none" stroke="currentColor"
+          className="text-black/10 dark:text-white/10" strokeWidth="7" />
+        <circle cx="44" cy="44" r={r} fill="none" stroke={color} strokeWidth="7"
+          strokeDasharray={circ} strokeDashoffset={offset}
+          strokeLinecap="round" transform="rotate(-90 44 44)"
+          style={{ transition: "stroke-dashoffset 0.7s ease" }} />
+        <text x="44" y="40" textAnchor="middle" fill="currentColor"
+          className="text-gray-800 dark:text-gray-100"
+          style={{ fontSize: "15px", fontWeight: 700, fill: "currentColor" }}>
+          {Math.round(pct)}%
+        </text>
+        <text x="44" y="54" textAnchor="middle"
+          style={{ fontSize: "9px", fill: "#9ca3af" }}>
+          {label}
+        </text>
+      </svg>
+      <p className="text-[9px] text-gray-400 dark:text-gray-500 text-center leading-tight">
+        Resets {resetsDate}
+      </p>
+    </div>
+  );
+}
+
+// ── Extra usage section (original 4-row style) ──────────────────────────────
+
+function ExtraUsageSection({ extra }: { extra: ExtraUsage }) {
+  const pct = Math.min(extra.percent_used, 100);
+  const barColor = pct >= 80 ? "bg-red-500" : pct >= 50 ? "bg-yellow-500" : "bg-blue-500";
+
+  const resetsLabel = (() => {
+    if (!extra.resets_at) return null;
+    try {
+      return new Date(extra.resets_at).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    } catch {
+      return extra.resets_at;
+    }
+  })();
+
+  return (
+    <div className="border-t border-black/10 dark:border-white/10 pt-3 space-y-2">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-semibold text-gray-700 dark:text-gray-300">Extra Usage</span>
+        <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${extra.enabled ? "bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-400" : "bg-gray-100 text-gray-500 dark:bg-white/10 dark:text-gray-500"}`}>
+          {extra.enabled ? "On" : "Off"}
+        </span>
+      </div>
+
+      {/* Progress bar */}
+      <div className="space-y-1">
+        <div className="flex justify-between items-center">
+          <span className="text-xs text-gray-600 dark:text-gray-400">
+            ${extra.spent.toFixed(2)} spent{resetsLabel ? ` · resets ${resetsLabel}` : ""}
+          </span>
+          <span className="text-xs font-semibold text-gray-700 dark:text-gray-200">
+            {Math.round(pct)}%
+          </span>
+        </div>
+        <div className="h-2 bg-black/10 dark:bg-white/10 rounded-full overflow-hidden">
+          <div
+            className={`h-full rounded-full transition-all duration-700 ${barColor}`}
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+      </div>
+
+      {/* Limit + balance */}
+      <div className="flex justify-between text-[11px] text-gray-500 dark:text-gray-400">
+        {extra.limit > 0 && (
+          <span>${extra.limit.toFixed(0)} monthly limit</span>
+        )}
+        <span>
+          ${extra.balance.toFixed(2)} balance
+          {extra.auto_reload && (
+            <span className="ml-1 text-green-500 dark:text-green-400">· auto-reload</span>
+          )}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// ── Utility components ──────────────────────────────────────────────────────
+
+function NotLoggedInPrompt() {
+  async function openLogin() {
+    try { await invoke("open_login_window"); } catch (_) {}
+  }
+  return (
+    <div className="flex flex-col items-center gap-3 text-center py-4 px-3">
+      <div className="w-11 h-11 bg-orange-100 dark:bg-orange-900/30 rounded-full flex items-center justify-center">
+        <span className="text-2xl">☁</span>
       </div>
       <div>
-        <p className="text-sm font-semibold text-gray-800 dark:text-gray-200 mb-1">
+        <p className="text-sm font-semibold text-gray-800 dark:text-gray-200 mb-0.5">
           Connect your Claude account
         </p>
         <p className="text-xs text-gray-500 dark:text-gray-400">
-          Log in to monitor your Pro / Max plan usage in real time.
+          Log in to monitor your Pro / Max usage.
         </p>
       </div>
-      <button
-        onClick={openLogin}
-        className="px-5 py-2.5 text-sm font-medium bg-[#d97706] hover:bg-[#b45309] text-white rounded-xl transition-colors"
-      >
+      <button onClick={openLogin}
+        className="px-5 py-2 text-sm font-medium bg-[#d97706] hover:bg-[#b45309] text-white rounded-xl transition-colors">
         Open Claude.ai Login
       </button>
     </div>
   );
 }
 
-function UsageBar({ label, percent }: { label: string; percent: number }) {
-  const color =
-    percent >= 80 ? "bg-red-500" : percent >= 50 ? "bg-yellow-500" : "bg-emerald-500";
-
-  return (
-    <div className="space-y-1">
-      <div className="flex justify-between items-center">
-        <span className="text-xs font-medium text-gray-600 dark:text-gray-400">{label}</span>
-        <span className="text-xs font-semibold text-gray-800 dark:text-gray-200">
-          {Math.round(percent)}%
-        </span>
-      </div>
-      <div className="h-2 bg-black/10 dark:bg-white/10 rounded-full overflow-hidden">
-        <div
-          className={`h-full rounded-full transition-all duration-700 ${color}`}
-          style={{ width: `${Math.min(percent, 100)}%` }}
-        />
-      </div>
-    </div>
-  );
-}
-
 function LoadingState() {
   return (
-    <div className="flex flex-col items-center gap-3 text-gray-400 dark:text-gray-500">
-      <div className="w-8 h-8 border-2 border-current border-t-transparent rounded-full animate-spin" />
-      <p className="text-sm">Fetching usage data...</p>
+    <div className="flex flex-col items-center gap-2 py-6 text-gray-400 dark:text-gray-500">
+      <div className="w-7 h-7 border-2 border-current border-t-transparent rounded-full animate-spin" />
+      <p className="text-xs">Fetching usage data…</p>
     </div>
   );
 }
 
 function ErrorState({ error, onRetry }: { error: string; onRetry: () => void }) {
   return (
-    <div className="flex flex-col items-center gap-4 text-center px-4">
-      <div className="w-12 h-12 bg-red-100 dark:bg-red-900/30 rounded-full flex items-center justify-center">
-        <span className="text-red-500 text-2xl">!</span>
+    <div className="flex flex-col items-center gap-3 text-center py-4 px-3">
+      <div className="w-10 h-10 bg-red-100 dark:bg-red-900/30 rounded-full flex items-center justify-center">
+        <span className="text-red-500 text-xl">!</span>
       </div>
       <div>
-        <p className="text-sm font-medium text-gray-800 dark:text-gray-200 mb-1">
-          Failed to fetch usage
-        </p>
-        <p className="text-xs text-gray-500 dark:text-gray-400 break-all">{error}</p>
+        <p className="text-xs font-medium text-gray-800 dark:text-gray-200 mb-0.5">Failed to fetch</p>
+        <p className="text-[10px] text-gray-500 dark:text-gray-400 break-all">{error}</p>
       </div>
-      <button
-        onClick={onRetry}
-        className="px-4 py-2 text-sm font-medium bg-gray-700 hover:bg-gray-800 text-white rounded-lg transition-colors"
-      >
+      <button onClick={onRetry}
+        className="px-4 py-1.5 text-xs font-medium bg-gray-700 hover:bg-gray-800 text-white rounded-lg transition-colors">
         Retry
       </button>
     </div>
@@ -213,38 +271,42 @@ function ErrorState({ error, onRetry }: { error: string; onRetry: () => void }) 
 
 function RefreshIcon({ spinning }: { spinning: boolean }) {
   return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={spinning ? "animate-spin" : ""}
-    >
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+      className={spinning ? "animate-spin" : ""}>
       <path d="M23 4v6h-6" />
       <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
     </svg>
   );
 }
 
+function SettingsIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06-.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+    </svg>
+  );
+}
+
 function LogoutIcon() {
   return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
       <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
       <polyline points="16 17 21 12 16 7" />
       <line x1="21" y1="12" x2="9" y2="12" />
     </svg>
   );
+}
+
+function formatTime(iso: string): string {
+  try {
+    return new Date(iso).toLocaleTimeString(undefined, {
+      hour: "2-digit", minute: "2-digit", second: "2-digit",
+    });
+  } catch {
+    return iso;
+  }
 }
