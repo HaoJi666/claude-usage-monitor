@@ -142,58 +142,33 @@ function ProUsageView({ usage }: { usage: UsageData }) {
   );
 }
 
-// ── MAX usage view (session bar + weekly bars) ────────────────────────────────
+// ── MAX usage view (circles for session + weekly, bar for Sonnet only) ───────
 
 function MaxUsageView({ usage }: { usage: UsageData }) {
   return (
-    <div className="space-y-3">
-      {/* Session block */}
-      <div>
-        <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-2">
-          Plan usage limits
-        </p>
-        <UsageBarRow
-          label="Current session"
-          sublabel={
-            usage.five_hour.utilization === 0
-              ? "Starts when a message is sent"
-              : formatResetLabel(usage.five_hour.resets_at)
-          }
-          period={usage.five_hour}
-          accentColor="violet"
-        />
+    <div className="space-y-4">
+      {/* Session + Weekly circles */}
+      <div className="flex items-center justify-around">
+        <CircleGauge label="Session" period={usage.five_hour} />
+        <div className="w-px h-16 bg-black/10 dark:bg-white/10" />
+        <CircleGauge label="Weekly" period={usage.seven_day} />
       </div>
 
-      {/* Weekly block */}
-      <div className="border-t border-black/10 dark:border-white/10 pt-3">
-        <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-2">
-          Weekly limits
-        </p>
-        <div className="space-y-2.5">
+      {/* Sonnet only bar (MAX only) */}
+      {usage.seven_day_sonnet && (
+        <div className="border-t border-black/10 dark:border-white/10 pt-3">
           <UsageBarRow
-            label="All models"
+            label="Sonnet only"
             sublabel={
-              usage.seven_day.utilization === 0
-                ? "Starts when a message is sent"
-                : `Resets ${formatResetDate(usage.seven_day.resets_at)}`
+              usage.seven_day_sonnet.utilization === 0
+                ? "You haven't used Sonnet yet"
+                : `Resets ${formatResetDate(usage.seven_day_sonnet.resets_at)}`
             }
-            period={usage.seven_day}
-            accentColor="violet"
+            period={usage.seven_day_sonnet}
+            accentColor="purple"
           />
-          {usage.seven_day_sonnet && (
-            <UsageBarRow
-              label="Sonnet only"
-              sublabel={
-                usage.seven_day_sonnet.utilization === 0
-                  ? "You haven't used Sonnet yet"
-                  : `Resets ${formatResetDate(usage.seven_day_sonnet.resets_at)}`
-              }
-              period={usage.seven_day_sonnet}
-              accentColor="purple"
-            />
-          )}
         </div>
-      </div>
+      )}
 
       {/* Extra usage */}
       {usage.extra_usage && <ExtraUsageSection extra={usage.extra_usage} />}
@@ -453,13 +428,3 @@ function formatResetDate(iso: string): string {
   }
 }
 
-function formatResetLabel(iso: string): string {
-  if (!iso) return "";
-  try {
-    return `Resets ${new Date(iso).toLocaleString(undefined, {
-      month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
-    })}`;
-  } catch {
-    return iso;
-  }
-}
