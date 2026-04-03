@@ -8,10 +8,12 @@ import { useUsage, ExtraUsage, PeriodUsage, UsageData } from "./hooks/useUsage";
 
 function isMaxPlan(usage: UsageData | null): boolean {
   if (!usage) return false;
+  // Plan type string (detected from billing API)
   const pt = (usage.plan_type ?? "").toLowerCase();
-  // Treat any plan name containing "max" as MAX tier.
   if (pt.includes("max")) return true;
-  // Also treat "current_session" kind as MAX (Pro still uses "five_hour").
+  // Most reliable: seven_day_sonnet only exists for MAX plan
+  if (usage.seven_day_sonnet != null) return true;
+  // Fallback: session-kind flag (future-proof)
   const kind = usage.five_hour.kind ?? "";
   return kind === "current_session" || kind === "session";
 }

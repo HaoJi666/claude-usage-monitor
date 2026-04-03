@@ -314,10 +314,34 @@ pub fn cm_api_data(
                 extra.resets_at = resets_at;
             }
         }
-        // Also try to capture plan type from subscription details
+        // Try to capture plan type from subscription details
         if let Some(pt) = crate::api::claude_ai::parse_plan_type(&data_val) {
             log::info!("cm_api_data: subscription_details — plan_type={}", pt);
             *state.detected_plan.lock().map_err(|e| e.to_string())? = Some(pt);
+        }
+        // seat_tier_quantities: {"max": N} → plan is max
+        if let Some(stq) = data_val.get("seat_tier_quantities").and_then(|v| v.as_object()) {
+            let tier = if stq.keys().any(|k| k.contains("max")) {
+                Some("max")
+            } else if stq.keys().any(|k| k.contains("pro")) {
+                Some("pro")
+            } else {
+                None
+            };
+            if let Some(t) = tier {
+                log::info!("cm_api_data: subscription_details — seat_tier_quantities → {}", t);
+                *state.detected_plan.lock().map_err(|e| e.to_string())? = Some(t.to_string());
+            }
+        }
+    }
+
+    // ── /overage_spend_limit: seat_tier is the most reliable plan indicator ──
+    if url.contains("/overage_spend_limit") {
+        if let Some(tier) = data_val.get("seat_tier").and_then(|v| v.as_str()) {
+            if !tier.is_empty() {
+                log::info!("cm_api_data: overage_spend_limit — seat_tier={}", tier);
+                *state.detected_plan.lock().map_err(|e| e.to_string())? = Some(tier.to_string());
+            }
         }
     }
 
