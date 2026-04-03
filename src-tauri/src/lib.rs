@@ -371,7 +371,56 @@ pub fn run() {
                             }
                         }
 
-                        tokio::time::sleep(Duration::from_secs(interval_secs)).await;
+                        // Wake up early when a quota period is about to reset so
+                        // stale 100% data gets replaced immediately after the reset.
+                        let sleep_secs = {
+                            let now = chrono::Utc::now();
+                            let next_reset_secs: Option<i64> = app_bg
+                                .try_state::<AppState>()
+                                .and_then(|s| {
+                                    let guard = s.latest_usage.lock().ok()?;
+                                    let usage = guard.as_ref()?;
+                                    let mut min_secs: Option<i64> = None;
+                                    for resets_at_str in [
+                                        &usage.five_hour.resets_at,
+                                        &usage.seven_day.resets_at,
+                                    ] {
+                                        if let Ok(reset_time) =
+                                            chrono::DateTime::parse_from_rfc3339(resets_at_str)
+                                        {
+                                            let secs = (reset_time
+                                                .with_timezone(&chrono::Utc)
+                                                - now)
+                                                .num_seconds();
+                                            if secs > 0 {
+                                                min_secs = Some(
+                                                    min_secs.map_or(secs, |m: i64| m.min(secs)),
+                                                );
+                                            }
+                                        }
+                                    }
+                                    min_secs
+                                });
+
+                            match next_reset_secs {
+                                // Reset arrives before the next scheduled refresh —
+                                // wake up 5 s after the reset so the API reflects
+                                // the new quota.
+                                Some(secs) if secs < interval_secs as i64 => {
+                                    let wake = (secs + 5).max(5) as u64;
+                                    log::info!(
+                                        "background_refresh: quota resets in {}s, \
+                                         shortening sleep to {}s",
+                                        secs,
+                                        wake
+                                    );
+                                    wake
+                                }
+                                _ => interval_secs,
+                            }
+                        };
+
+                        tokio::time::sleep(Duration::from_secs(sleep_secs)).await;
                     }
                 });
             }
