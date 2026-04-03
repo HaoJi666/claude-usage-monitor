@@ -104,15 +104,19 @@ const FETCH_INTERCEPTOR_JS: &str = r#"
       // No domain check — session window only loads claude.ai, and
       // internal API calls use relative paths like /api/usage (no domain).
       var hit = (
-        u.indexOf('/api/usage')          !== -1 ||
-        u.indexOf('/api/organizations')  !== -1 ||
-        u.indexOf('/api/account')        !== -1 ||
-        u.indexOf('usage_limit')         !== -1 ||
-        u.indexOf('rate_limit')          !== -1 ||
-        u.indexOf('/api/billing')        !== -1 ||
-        u.indexOf('/api/credits')        !== -1 ||
-        u.indexOf('extra_usage')         !== -1 ||
-        u.indexOf('overage')             !== -1
+        u.indexOf('/api/usage')             !== -1 ||
+        u.indexOf('/api/organizations')     !== -1 ||
+        u.indexOf('/api/account')           !== -1 ||
+        u.indexOf('usage_limit')            !== -1 ||
+        u.indexOf('rate_limit')             !== -1 ||
+        u.indexOf('/api/billing')           !== -1 ||
+        u.indexOf('/api/credits')           !== -1 ||
+        u.indexOf('extra_usage')            !== -1 ||
+        u.indexOf('overage')                !== -1 ||
+        u.indexOf('/subscription_details') !== -1 ||
+        u.indexOf('/subscription')          !== -1 ||
+        u.indexOf('/plan')                  !== -1 ||
+        u.indexOf('/quota')                 !== -1
       );
 
       if (resp.ok && hit) {
@@ -187,6 +191,8 @@ pub struct AppState {
     pub latest_extra: Mutex<Option<api::claude_ai::ExtraUsage>>,
     pub is_logged_in: Mutex<bool>,
     pub session_email: Mutex<Option<String>>,
+    /// Plan type detected from billing/account API (preferred over usage-derived).
+    pub detected_plan: Mutex<Option<String>>,
 }
 
 fn get_db_path(app: &tauri::AppHandle) -> std::path::PathBuf {
@@ -227,6 +233,7 @@ pub fn run() {
                 latest_extra: Mutex::new(None),
                 is_logged_in: Mutex::new(false),
                 session_email: Mutex::new(None),
+                detected_plan: Mutex::new(None),
             });
 
             // ── Session webview (login + data capture) ────────────────
@@ -365,8 +372,14 @@ pub fn run() {
 
                         if logged_in {
                             if let Some(session) = app_bg.get_webview_window("session") {
+                                // Pre-fetch account & subscription so the fetch interceptor
+                                // can capture plan type before the usage page loads.
                                 let _ = session.eval(
-                                    "window.location.href = 'https://claude.ai/settings/usage';",
+                                    "(async function() {\
+                                        try { await fetch('/api/account'); } catch(_) {}\
+                                        try { await fetch('/api/subscription_details'); } catch(_) {}\
+                                        window.location.href = 'https://claude.ai/settings/usage';\
+                                    })();",
                                 );
                             }
                         }

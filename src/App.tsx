@@ -2,13 +2,28 @@ import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import "./App.css";
-import { useUsage, ExtraUsage, PeriodUsage } from "./hooks/useUsage";
+import { useUsage, ExtraUsage, PeriodUsage, UsageData } from "./hooks/useUsage";
+
+// ── Plan helpers ──────────────────────────────────────────────────────────────
+
+function isMaxPlan(usage: UsageData | null): boolean {
+  if (!usage) return false;
+  const pt = (usage.plan_type ?? "").toLowerCase();
+  // Treat any plan name containing "max" as MAX tier.
+  if (pt.includes("max")) return true;
+  // Also treat "current_session" kind as MAX (Pro still uses "five_hour").
+  const kind = usage.five_hour.kind ?? "";
+  return kind === "current_session" || kind === "session";
+}
+
+// ── App ───────────────────────────────────────────────────────────────────────
 
 export default function App() {
   const { usage, loading, error, isLoggedIn, refetch } = useUsage();
   const containerRef = useRef<HTMLDivElement>(null);
+  const isMax = isMaxPlan(usage);
 
-  // Auto-resize the window to fit content so there's no wasted space.
+  // Auto-resize the window to fit content.
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -37,16 +52,16 @@ export default function App() {
   return (
     <div ref={containerRef} className="w-[360px] bg-white dark:bg-[#1c1c1e] overflow-hidden rounded-2xl shadow-2xl select-none">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-black/10 dark:border-white/10">
+      <div className={`flex items-center justify-between px-4 py-3 border-b border-black/10 dark:border-white/10 ${isMax ? "bg-gradient-to-r from-violet-500/5 to-purple-500/5 dark:from-violet-900/10 dark:to-purple-900/10" : ""}`}>
         <div className="flex items-center gap-2">
-          <div className="w-5 h-5 bg-gradient-to-br from-orange-400 to-red-500 rounded-md flex items-center justify-center">
+          <div className={`w-5 h-5 rounded-md flex items-center justify-center ${isMax ? "bg-gradient-to-br from-violet-500 to-purple-600" : "bg-gradient-to-br from-orange-400 to-red-500"}`}>
             <span className="text-white text-[10px] font-bold">C</span>
           </div>
           <div className="flex items-baseline gap-1.5">
             <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">Claude Usage</span>
             {usage?.plan_type && (
-              <span className="text-[10px] font-medium text-orange-500 dark:text-orange-400 uppercase tracking-wider">
-                {usage.plan_type}
+              <span className={`text-[10px] font-medium uppercase tracking-wider ${isMax ? "text-violet-500 dark:text-violet-400" : "text-orange-500 dark:text-orange-400"}`}>
+                {isMax ? "MAX" : usage.plan_type}
               </span>
             )}
           </div>
@@ -86,19 +101,11 @@ export default function App() {
         ) : loading && !usage ? (
           <LoadingState />
         ) : usage ? (
-          <div className="space-y-4">
-            {/* 5h + 7d circles */}
-            <div className="flex items-center justify-around">
-              <CircleGauge label="5-Hour" period={usage.five_hour} />
-              <div className="w-px h-16 bg-black/10 dark:bg-white/10" />
-              <CircleGauge label="7-Day" period={usage.seven_day} />
-            </div>
-
-            {/* Extra usage */}
-            {usage.extra_usage && (
-              <ExtraUsageSection extra={usage.extra_usage} />
-            )}
-          </div>
+          isMax ? (
+            <MaxUsageView usage={usage} />
+          ) : (
+            <ProUsageView usage={usage} />
+          )
         ) : (
           <LoadingState />
         )}
@@ -114,7 +121,127 @@ export default function App() {
   );
 }
 
-// ── Circular gauge ──────────────────────────────────────────────────────────
+// ── Pro usage view (circle gauges) ───────────────────────────────────────────
+
+function ProUsageView({ usage }: { usage: UsageData }) {
+  const sessionLabel = usage.five_hour.kind === "current_session" || usage.five_hour.kind === "session"
+    ? "Session"
+    : "5-Hour";
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-around">
+        <CircleGauge label={sessionLabel} period={usage.five_hour} />
+        <div className="w-px h-16 bg-black/10 dark:bg-white/10" />
+        <CircleGauge label="7-Day" period={usage.seven_day} />
+      </div>
+      {usage.extra_usage && <ExtraUsageSection extra={usage.extra_usage} />}
+    </div>
+  );
+}
+
+// ── MAX usage view (session bar + weekly bars) ────────────────────────────────
+
+function MaxUsageView({ usage }: { usage: UsageData }) {
+  return (
+    <div className="space-y-3">
+      {/* Session block */}
+      <div>
+        <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-2">
+          Plan usage limits
+        </p>
+        <UsageBarRow
+          label="Current session"
+          sublabel={
+            usage.five_hour.utilization === 0
+              ? "Starts when a message is sent"
+              : formatResetLabel(usage.five_hour.resets_at)
+          }
+          period={usage.five_hour}
+          accentColor="violet"
+        />
+      </div>
+
+      {/* Weekly block */}
+      <div className="border-t border-black/10 dark:border-white/10 pt-3">
+        <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-2">
+          Weekly limits
+        </p>
+        <div className="space-y-2.5">
+          <UsageBarRow
+            label="All models"
+            sublabel={
+              usage.seven_day.utilization === 0
+                ? "Starts when a message is sent"
+                : `Resets ${formatResetDate(usage.seven_day.resets_at)}`
+            }
+            period={usage.seven_day}
+            accentColor="violet"
+          />
+          {usage.seven_day_sonnet && (
+            <UsageBarRow
+              label="Sonnet only"
+              sublabel={
+                usage.seven_day_sonnet.utilization === 0
+                  ? "You haven't used Sonnet yet"
+                  : `Resets ${formatResetDate(usage.seven_day_sonnet.resets_at)}`
+              }
+              period={usage.seven_day_sonnet}
+              accentColor="purple"
+            />
+          )}
+        </div>
+      </div>
+
+      {/* Extra usage */}
+      {usage.extra_usage && <ExtraUsageSection extra={usage.extra_usage} />}
+    </div>
+  );
+}
+
+// ── Usage bar row (MAX style) ─────────────────────────────────────────────────
+
+function UsageBarRow({
+  label,
+  sublabel,
+  period,
+  accentColor,
+}: {
+  label: string;
+  sublabel: string;
+  period: PeriodUsage;
+  accentColor: "violet" | "purple";
+}) {
+  const pct = Math.min(period.utilization, 100);
+  const barClass =
+    pct >= 80
+      ? "bg-red-500"
+      : pct >= 50
+      ? "bg-yellow-500"
+      : accentColor === "violet"
+      ? "bg-violet-500"
+      : "bg-purple-500";
+
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-medium text-gray-700 dark:text-gray-300">{label}</span>
+        <span className="text-xs font-semibold text-gray-700 dark:text-gray-200">
+          {Math.round(pct)}% used
+        </span>
+      </div>
+      <div className="h-2 bg-black/10 dark:bg-white/10 rounded-full overflow-hidden">
+        <div
+          className={`h-full rounded-full transition-all duration-700 ${barClass}`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <p className="text-[10px] text-gray-400 dark:text-gray-500">{sublabel}</p>
+    </div>
+  );
+}
+
+// ── Circular gauge (Pro style) ────────────────────────────────────────────────
 
 function CircleGauge({ label, period }: { label: string; period: PeriodUsage }) {
   const pct = Math.min(period.utilization, 100);
@@ -125,7 +252,9 @@ function CircleGauge({ label, period }: { label: string; period: PeriodUsage }) 
 
   const resetsDate = (() => {
     try {
-      return new Date(period.resets_at).toLocaleDateString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+      return new Date(period.resets_at).toLocaleDateString(undefined, {
+        month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+      });
     } catch {
       return period.resets_at;
     }
@@ -151,13 +280,13 @@ function CircleGauge({ label, period }: { label: string; period: PeriodUsage }) 
         </text>
       </svg>
       <p className="text-[9px] text-gray-400 dark:text-gray-500 text-center leading-tight">
-        Resets {resetsDate}
+        {period.resets_at ? `Resets ${resetsDate}` : "—"}
       </p>
     </div>
   );
 }
 
-// ── Extra usage section (original 4-row style) ──────────────────────────────
+// ── Extra usage section ───────────────────────────────────────────────────────
 
 function ExtraUsageSection({ extra }: { extra: ExtraUsage }) {
   const pct = Math.min(extra.percent_used, 100);
@@ -181,7 +310,6 @@ function ExtraUsageSection({ extra }: { extra: ExtraUsage }) {
         </span>
       </div>
 
-      {/* Progress bar */}
       <div className="space-y-1">
         <div className="flex justify-between items-center">
           <span className="text-xs text-gray-600 dark:text-gray-400">
@@ -199,7 +327,6 @@ function ExtraUsageSection({ extra }: { extra: ExtraUsage }) {
         </div>
       </div>
 
-      {/* Limit + balance */}
       <div className="flex justify-between text-[11px] text-gray-500 dark:text-gray-400">
         {extra.limit > 0 && (
           <span>${extra.limit.toFixed(0)} monthly limit</span>
@@ -215,7 +342,7 @@ function ExtraUsageSection({ extra }: { extra: ExtraUsage }) {
   );
 }
 
-// ── Utility components ──────────────────────────────────────────────────────
+// ── Utility components ────────────────────────────────────────────────────────
 
 function NotLoggedInPrompt() {
   async function openLogin() {
@@ -301,11 +428,35 @@ function LogoutIcon() {
   );
 }
 
+// ── Date helpers ──────────────────────────────────────────────────────────────
+
 function formatTime(iso: string): string {
   try {
     return new Date(iso).toLocaleTimeString(undefined, {
       hour: "2-digit", minute: "2-digit", second: "2-digit",
     });
+  } catch {
+    return iso;
+  }
+}
+
+function formatResetDate(iso: string): string {
+  if (!iso) return "";
+  try {
+    return new Date(iso).toLocaleDateString(undefined, {
+      weekday: "short", hour: "2-digit", minute: "2-digit",
+    });
+  } catch {
+    return iso;
+  }
+}
+
+function formatResetLabel(iso: string): string {
+  if (!iso) return "";
+  try {
+    return `Resets ${new Date(iso).toLocaleString(undefined, {
+      month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+    })}`;
   } catch {
     return iso;
   }

@@ -5,6 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 export interface PeriodUsage {
   utilization: number;
   resets_at: string;
+  kind?: string; // "five_hour" | "current_session" | "session"
 }
 
 export interface ExtraUsage {
@@ -20,6 +21,7 @@ export interface ExtraUsage {
 export interface UsageData {
   five_hour: PeriodUsage;
   seven_day: PeriodUsage;
+  seven_day_sonnet?: PeriodUsage | null;
   plan_type?: string | null;
   extra_usage?: ExtraUsage | null;
   fetched_at: string;
