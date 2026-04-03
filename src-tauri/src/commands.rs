@@ -48,11 +48,19 @@ pub fn get_usage(state: State<'_, AppState>) -> Result<Option<ProUsageData>, Str
 pub fn get_login_status(state: State<'_, AppState>) -> Result<LoginStatus, String> {
     let is_logged_in = *state.is_logged_in.lock().map_err(|e| e.to_string())?;
     let email = state.session_email.lock().map_err(|e| e.to_string())?.clone();
+    // Prefer billing-detected plan over usage-derived plan_type.
     let plan_type = state
-        .latest_usage
+        .detected_plan
         .lock()
         .ok()
-        .and_then(|u| u.as_ref().and_then(|d| d.plan_type.clone()));
+        .and_then(|p| p.clone())
+        .or_else(|| {
+            state
+                .latest_usage
+                .lock()
+                .ok()
+                .and_then(|u| u.as_ref().and_then(|d| d.plan_type.clone()))
+        });
     Ok(LoginStatus { is_logged_in, email, plan_type })
 }
 
@@ -80,8 +88,15 @@ pub fn trigger_refresh(app: tauri::AppHandle) -> Result<(), String> {
     let win = app
         .get_webview_window("session")
         .ok_or("Session window not found")?;
-    win.eval("window.location.href = 'https://claude.ai/settings/usage';")
-        .map_err(|e| e.to_string())
+    // Pre-fetch account & subscription to capture plan type before usage page loads.
+    win.eval(
+        "(async function() {\
+            try { await fetch('/api/account'); } catch(_) {}\
+            try { await fetch('/api/subscription_details'); } catch(_) {}\
+            window.location.href = 'https://claude.ai/settings/usage';\
+        })();",
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -289,7 +304,7 @@ pub fn cm_api_data(
         }
     }
 
-    // ── /subscription_details: patch billing-cycle reset date ────────────────
+    // ── /subscription_details: patch billing-cycle reset date + plan type ───
     if url.contains("/subscription_details") {
         if let Some(date) = data_val.get("next_charge_date").and_then(|v| v.as_str()) {
             let resets_at = format!("{}T00:00:00Z", date);
@@ -298,6 +313,47 @@ pub fn cm_api_data(
             if let Some(ref mut extra) = *guard {
                 extra.resets_at = resets_at;
             }
+        }
+        // Try to capture plan type from subscription details
+        if let Some(pt) = crate::api::claude_ai::parse_plan_type(&data_val) {
+            log::info!("cm_api_data: subscription_details — plan_type={}", pt);
+            *state.detected_plan.lock().map_err(|e| e.to_string())? = Some(pt);
+        }
+        // seat_tier_quantities: {"max": N} → plan is max
+        if let Some(stq) = data_val.get("seat_tier_quantities").and_then(|v| v.as_object()) {
+            let tier = if stq.keys().any(|k| k.contains("max")) {
+                Some("max")
+            } else if stq.keys().any(|k| k.contains("pro")) {
+                Some("pro")
+            } else {
+                None
+            };
+            if let Some(t) = tier {
+                log::info!("cm_api_data: subscription_details — seat_tier_quantities → {}", t);
+                *state.detected_plan.lock().map_err(|e| e.to_string())? = Some(t.to_string());
+            }
+        }
+    }
+
+    // ── /overage_spend_limit: seat_tier is the most reliable plan indicator ──
+    if url.contains("/overage_spend_limit") {
+        if let Some(tier) = data_val.get("seat_tier").and_then(|v| v.as_str()) {
+            if !tier.is_empty() {
+                log::info!("cm_api_data: overage_spend_limit — seat_tier={}", tier);
+                *state.detected_plan.lock().map_err(|e| e.to_string())? = Some(tier.to_string());
+            }
+        }
+    }
+
+    // ── /api/account: capture email and plan type ────────────────────────────
+    if url.contains("/api/account") || url.contains("/api/me") {
+        if let Some(pt) = crate::api::claude_ai::parse_plan_type(&data_val) {
+            log::info!("cm_api_data: account — plan_type={}", pt);
+            *state.detected_plan.lock().map_err(|e| e.to_string())? = Some(pt);
+        }
+        // Also try to capture email
+        if let Some(email) = data_val.get("email").and_then(|v| v.as_str()) {
+            *state.session_email.lock().map_err(|e| e.to_string())? = Some(email.to_string());
         }
     }
 

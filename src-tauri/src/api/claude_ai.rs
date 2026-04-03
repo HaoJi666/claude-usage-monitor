@@ -5,6 +5,9 @@ use serde::{Deserialize, Serialize};
 pub struct PeriodUsage {
     pub utilization: f64,
     pub resets_at: String,
+    /// "five_hour" | "current_session" | "session"
+    #[serde(default)]
+    pub kind: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,6 +25,9 @@ pub struct ExtraUsage {
 pub struct ProUsageData {
     pub five_hour: PeriodUsage,
     pub seven_day: PeriodUsage,
+    /// MAX plan only: Sonnet-specific weekly limit ("Sonnet only" row)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seven_day_sonnet: Option<PeriodUsage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plan_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -30,45 +36,87 @@ pub struct ProUsageData {
 }
 
 /// Parse captured API response from claude.ai.
-/// Handles multiple possible response shapes.
+///
+/// Supported response shapes (Pro and MAX):
+///   A. { five_hour: {...}, seven_day: {...} }
+///   B. { usage: { five_hour: {...}, seven_day: {...} } }
+///   C. { current_session: {...}, seven_day: {...} }           ← MAX
+///   D. { current_session: {...}, seven_day: {...},
+///         seven_day_sonnet: {...} }                           ← MAX with Sonnet row
+///   + nested variants of C/D inside a `usage` key
 pub fn parse_usage(url: &str, data: &serde_json::Value) -> Option<ProUsageData> {
-    log::debug!("Trying to parse usage from URL: {}", url);
+    log::debug!("parse_usage url={}", url);
 
     let plan_type = data
         .get("plan_type")
         .or_else(|| data.get("plan"))
         .or_else(|| data.get("subscription_plan"))
+        .or_else(|| data.get("plan_tier"))
+        .or_else(|| data.get("tier"))
         .and_then(|v| v.as_str())
         .map(String::from);
 
-    // Format A: { five_hour: { utilization, resets_at }, seven_day: {...} }
-    if let (Some(fh), Some(sd)) = (data.get("five_hour"), data.get("seven_day")) {
-        if let (Some(five_hour), Some(seven_day)) = (parse_period(fh), parse_period(sd)) {
-            return Some(ProUsageData {
-                five_hour,
-                seven_day,
-                plan_type,
-                extra_usage: None, // populated separately in AppState::latest_extra
-                fetched_at: Utc::now().to_rfc3339(),
-            });
+    // Field-name candidates for the short-term (session / 5-h) period.
+    const SESSION_KEYS: &[&str] = &["five_hour", "current_session", "session"];
+    // Field-name candidates for the weekly (all-models) period.
+    const WEEKLY_KEYS: &[&str] = &["seven_day", "weekly", "all_models"];
+    // Field-name candidates for the Sonnet-specific weekly period (MAX only).
+    const SONNET_KEYS: &[&str] = &[
+        "seven_day_sonnet",
+        "sonnet_seven_day",
+        "weekly_sonnet",
+        "sonnet_only",
+        "claude_sonnet_seven_day",
+    ];
+
+    // Try to parse from a given JSON object (either root or nested `usage`).
+    let try_parse = |obj: &serde_json::Value| -> Option<ProUsageData> {
+        let five_hour = SESSION_KEYS.iter().find_map(|k| {
+            obj.get(*k).and_then(|v| {
+                parse_period(v).map(|mut p| {
+                    p.kind = k.to_string();
+                    p
+                })
+            })
+        })?;
+
+        let seven_day = WEEKLY_KEYS.iter().find_map(|k| {
+            obj.get(*k).and_then(|v| parse_period(v))
+        })?;
+
+        let seven_day_sonnet = SONNET_KEYS.iter().find_map(|k| {
+            obj.get(*k).and_then(|v| parse_period(v))
+        });
+
+        Some(ProUsageData {
+            five_hour,
+            seven_day,
+            seven_day_sonnet,
+            plan_type: plan_type.clone(),
+            extra_usage: None,
+            fetched_at: Utc::now().to_rfc3339(),
+        })
+    };
+
+    // Format A / C / D — flat root object
+    if let Some(result) = try_parse(data) {
+        return Some(result);
+    }
+
+    // Format B — nested under `usage` key
+    if let Some(nested) = data.get("usage") {
+        if let Some(result) = try_parse(nested) {
+            return Some(result);
         }
     }
 
-    // Format B: { usage: { five_hour: {...}, seven_day: {...} }, plan_type: ... }
-    if let Some(usage) = data.get("usage") {
-        if let (Some(fh), Some(sd)) = (usage.get("five_hour"), usage.get("seven_day")) {
-            if let (Some(five_hour), Some(seven_day)) = (parse_period(fh), parse_period(sd)) {
-                return Some(ProUsageData {
-                    five_hour,
-                    seven_day,
-                    plan_type,
-                    extra_usage: None,
-                    fetched_at: Utc::now().to_rfc3339(),
-                });
-            }
-        }
-    }
-
+    log::warn!(
+        "parse_usage: no matching format for url={} keys=[{}]",
+        url,
+        data.as_object()
+            .map(|o| o.keys().cloned().collect::<Vec<_>>().join(", "))
+            .unwrap_or_default()
+    );
     None
 }
 
@@ -76,31 +124,29 @@ fn parse_period(v: &serde_json::Value) -> Option<PeriodUsage> {
     Some(PeriodUsage {
         utilization: v.get("utilization")?.as_f64()?,
         resets_at: v.get("resets_at")?.as_str()?.to_string(),
+        kind: String::new(),
     })
 }
 
 /// Parse extra usage from the nested `extra_usage` object inside /usage endpoint.
-/// Actual API fields: is_enabled, used_credits (cents), monthly_limit (cents), utilization (%)
 pub fn parse_usage_extra(data: &serde_json::Value) -> Option<ExtraUsage> {
     let src = data.get("extra_usage")?;
-    // used_credits is required — without it there's nothing meaningful to show.
     let used_credits = src.get("used_credits").and_then(|v| v.as_f64())?;
     let monthly_limit = src.get("monthly_limit").and_then(|v| v.as_f64()).unwrap_or(0.0);
     let utilization = src.get("utilization").and_then(|v| v.as_f64()).unwrap_or(0.0);
     let enabled = src.get("is_enabled").and_then(|v| v.as_bool()).unwrap_or(false);
     Some(ExtraUsage {
         enabled,
-        spent: used_credits / 100.0,        // credits = cents → dollars
+        spent: used_credits / 100.0,
         limit: monthly_limit / 100.0,
-        balance: 0.0,                        // patched later from /prepaid/credits
-        percent_used: utilization,           // already in %
-        resets_at: String::new(),           // patched later from /subscription_details
-        auto_reload: false,                  // patched later from /prepaid/credits
+        balance: 0.0,
+        percent_used: utilization,
+        resets_at: String::new(),
+        auto_reload: false,
     })
 }
 
 /// Parse prepaid credit balance and auto-reload flag from /prepaid/credits endpoint.
-/// Returns (balance_dollars, auto_reload_enabled).
 pub fn parse_prepaid_credits(data: &serde_json::Value) -> Option<(f64, bool)> {
     let amount = data.get("amount").and_then(|v| v.as_f64())?;
     let auto_reload = data
@@ -109,4 +155,17 @@ pub fn parse_prepaid_credits(data: &serde_json::Value) -> Option<(f64, bool)> {
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     Some((amount / 100.0, auto_reload))
+}
+
+/// Try to extract a plan-type string from an account / subscription API response.
+/// Returns None if the response doesn't look like account/subscription data.
+pub fn parse_plan_type(data: &serde_json::Value) -> Option<String> {
+    data.get("plan_type")
+        .or_else(|| data.get("plan"))
+        .or_else(|| data.get("subscription_plan"))
+        .or_else(|| data.get("plan_tier"))
+        .or_else(|| data.get("tier"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from)
 }
