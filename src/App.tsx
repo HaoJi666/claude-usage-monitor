@@ -226,6 +226,8 @@ function CircleGauge({ label, period }: { label: string; period: PeriodUsage }) 
   const circ = 2 * Math.PI * r;
   const offset = circ - (pct / 100) * circ;
   const color = pct >= 80 ? "#ef4444" : pct >= 50 ? "#eab308" : "#10b981";
+  const isSessionPeriod =
+    label === "Session" || period.kind === "current_session" || period.kind === "session";
 
   const resetsDate = (() => {
     try {
@@ -257,7 +259,11 @@ function CircleGauge({ label, period }: { label: string; period: PeriodUsage }) 
         </text>
       </svg>
       <p className="text-[9px] text-gray-400 dark:text-gray-500 text-center leading-tight">
-        {period.resets_at ? `Resets ${resetsDate}` : "—"}
+        {period.resets_at
+          ? `Resets ${resetsDate}`
+          : isSessionPeriod
+          ? "Starts when a message is sent"
+          : "—"}
       </p>
     </div>
   );
@@ -427,4 +433,3 @@ function formatResetDate(iso: string): string {
     return iso;
   }
 }
-

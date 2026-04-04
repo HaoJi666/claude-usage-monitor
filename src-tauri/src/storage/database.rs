@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -51,7 +51,8 @@ pub fn initialize(conn: &Connection) -> Result<()> {
             value TEXT NOT NULL
         );
         ",
-    ).context("Failed to initialize database schema")?;
+    )
+    .context("Failed to initialize database schema")?;
     Ok(())
 }
 
@@ -74,17 +75,18 @@ pub fn get_accounts(conn: &Connection) -> Result<Vec<Account>> {
     let mut stmt = conn.prepare(
         "SELECT id, platform, name, is_active, created_at FROM accounts ORDER BY created_at DESC",
     )?;
-    let accounts = stmt.query_map([], |row| {
-        Ok(Account {
-            id: row.get(0)?,
-            platform: row.get(1)?,
-            name: row.get(2)?,
-            is_active: row.get::<_, i32>(3)? != 0,
-            created_at: row.get(4)?,
-        })
-    })?
-    .collect::<std::result::Result<Vec<_>, _>>()
-    .context("Failed to fetch accounts")?;
+    let accounts = stmt
+        .query_map([], |row| {
+            Ok(Account {
+                id: row.get(0)?,
+                platform: row.get(1)?,
+                name: row.get(2)?,
+                is_active: row.get::<_, i32>(3)? != 0,
+                created_at: row.get(4)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .context("Failed to fetch accounts")?;
     Ok(accounts)
 }
 
@@ -144,6 +146,7 @@ pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<()> {
     conn.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
         params![key, value],
-    ).context("Failed to save setting")?;
+    )
+    .context("Failed to save setting")?;
     Ok(())
 }
