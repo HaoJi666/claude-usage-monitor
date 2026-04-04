@@ -71,22 +71,29 @@ pub fn parse_usage(url: &str, data: &serde_json::Value) -> Option<ProUsageData> 
 
     // Try to parse from a given JSON object (either root or nested `usage`).
     let try_parse = |obj: &serde_json::Value| -> Option<ProUsageData> {
-        let five_hour = SESSION_KEYS.iter().find_map(|k| {
-            obj.get(*k).and_then(|v| {
-                parse_period(v).map(|mut p| {
-                    p.kind = k.to_string();
-                    p
+        let five_hour = SESSION_KEYS
+            .iter()
+            .find_map(|k| {
+                obj.get(*k).and_then(|v| {
+                    parse_period(v).map(|mut p| {
+                        p.kind = k.to_string();
+                        p
+                    })
                 })
             })
-        })?;
+            .unwrap_or_else(|| PeriodUsage {
+                utilization: 0.0,
+                resets_at: String::new(),
+                kind: String::new(),
+            });
 
-        let seven_day = WEEKLY_KEYS.iter().find_map(|k| {
-            obj.get(*k).and_then(|v| parse_period(v))
-        })?;
+        let seven_day = WEEKLY_KEYS
+            .iter()
+            .find_map(|k| obj.get(*k).and_then(|v| parse_period(v)))?;
 
-        let seven_day_sonnet = SONNET_KEYS.iter().find_map(|k| {
-            obj.get(*k).and_then(|v| parse_period(v))
-        });
+        let seven_day_sonnet = SONNET_KEYS
+            .iter()
+            .find_map(|k| obj.get(*k).and_then(|v| parse_period(v)));
 
         Some(ProUsageData {
             five_hour,
@@ -123,18 +130,60 @@ pub fn parse_usage(url: &str, data: &serde_json::Value) -> Option<ProUsageData> 
 fn parse_period(v: &serde_json::Value) -> Option<PeriodUsage> {
     Some(PeriodUsage {
         utilization: v.get("utilization")?.as_f64()?,
-        resets_at: v.get("resets_at")?.as_str()?.to_string(),
+        resets_at: v
+            .get("resets_at")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
         kind: String::new(),
     })
+}
+
+pub fn merge_usage_with_previous(
+    mut current: ProUsageData,
+    previous: Option<&ProUsageData>,
+) -> ProUsageData {
+    if let Some(prev) = previous {
+        if current.five_hour.kind.is_empty() {
+            current.five_hour.kind = prev.five_hour.kind.clone();
+        }
+        if current.five_hour.resets_at.is_empty() && current.five_hour.utilization > 0.0 {
+            current.five_hour.resets_at = prev.five_hour.resets_at.clone();
+        }
+        if current.seven_day.resets_at.is_empty() {
+            current.seven_day.resets_at = prev.seven_day.resets_at.clone();
+        }
+        if current.plan_type.is_none() {
+            current.plan_type = prev.plan_type.clone();
+        }
+        if current.seven_day_sonnet.is_none() {
+            current.seven_day_sonnet = prev.seven_day_sonnet.clone();
+        }
+    }
+
+    if current.five_hour.kind.is_empty() {
+        current.five_hour.kind = "current_session".to_string();
+    }
+
+    current
 }
 
 /// Parse extra usage from the nested `extra_usage` object inside /usage endpoint.
 pub fn parse_usage_extra(data: &serde_json::Value) -> Option<ExtraUsage> {
     let src = data.get("extra_usage")?;
     let used_credits = src.get("used_credits").and_then(|v| v.as_f64())?;
-    let monthly_limit = src.get("monthly_limit").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let utilization = src.get("utilization").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let enabled = src.get("is_enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+    let monthly_limit = src
+        .get("monthly_limit")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let utilization = src
+        .get("utilization")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let enabled = src
+        .get("is_enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     Some(ExtraUsage {
         enabled,
         spent: used_credits / 100.0,
@@ -168,4 +217,80 @@ pub fn parse_plan_type(data: &serde_json::Value) -> Option<String> {
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .map(String::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{merge_usage_with_previous, parse_usage};
+    use serde_json::json;
+
+    #[test]
+    fn parse_usage_accepts_missing_session_reset_time() {
+        let payload = json!({
+            "current_session": {
+                "utilization": 0.0
+            },
+            "seven_day": {
+                "utilization": 32.0,
+                "resets_at": "2026-04-08T03:59:59Z"
+            }
+        });
+
+        let usage = parse_usage("/api/usage", &payload).expect("usage should parse");
+
+        assert_eq!(usage.five_hour.utilization, 0.0);
+        assert_eq!(usage.five_hour.resets_at, "");
+        assert_eq!(usage.five_hour.kind, "current_session");
+    }
+
+    #[test]
+    fn parse_usage_defaults_missing_session_block_to_zero() {
+        let payload = json!({
+            "seven_day": {
+                "utilization": 41.0,
+                "resets_at": "2026-04-08T03:59:59Z"
+            }
+        });
+
+        let usage = parse_usage("/api/usage", &payload).expect("usage should parse");
+
+        assert_eq!(usage.five_hour.utilization, 0.0);
+        assert_eq!(usage.five_hour.resets_at, "");
+        assert_eq!(usage.five_hour.kind, "");
+    }
+
+    #[test]
+    fn merge_usage_keeps_empty_reset_for_fresh_zeroed_session() {
+        let previous = parse_usage(
+            "/api/usage",
+            &json!({
+                "current_session": {
+                    "utilization": 88.0,
+                    "resets_at": "2026-04-04T08:59:59Z"
+                },
+                "seven_day": {
+                    "utilization": 60.0,
+                    "resets_at": "2026-04-08T03:59:59Z"
+                }
+            }),
+        )
+        .expect("previous usage should parse");
+
+        let current = parse_usage(
+            "/api/usage",
+            &json!({
+                "seven_day": {
+                    "utilization": 12.0,
+                    "resets_at": "2026-04-08T03:59:59Z"
+                }
+            }),
+        )
+        .expect("current usage should parse");
+
+        let merged = merge_usage_with_previous(current, Some(&previous));
+
+        assert_eq!(merged.five_hour.utilization, 0.0);
+        assert_eq!(merged.five_hour.resets_at, "");
+        assert_eq!(merged.five_hour.kind, "current_session");
+    }
 }

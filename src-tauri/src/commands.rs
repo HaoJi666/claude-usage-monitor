@@ -1,10 +1,6 @@
 use tauri::{Emitter, Manager, State};
 
-use crate::{
-    api::claude_ai::ProUsageData,
-    storage::database,
-    AppState,
-};
+use crate::{api::claude_ai::ProUsageData, storage::database, AppState};
 
 // ── Data types returned to the frontend ──────────────────────────────────────
 
@@ -32,7 +28,11 @@ impl Default for AppSettings {
 
 #[tauri::command]
 pub fn get_usage(state: State<'_, AppState>) -> Result<Option<ProUsageData>, String> {
-    let mut usage = state.latest_usage.lock().map_err(|e| e.to_string())?.clone();
+    let mut usage = state
+        .latest_usage
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone();
     // Merge separately-stored extra_usage if the main response didn't include it.
     if let Some(u) = usage.as_mut() {
         if u.extra_usage.is_none() {
@@ -47,7 +47,11 @@ pub fn get_usage(state: State<'_, AppState>) -> Result<Option<ProUsageData>, Str
 #[tauri::command]
 pub fn get_login_status(state: State<'_, AppState>) -> Result<LoginStatus, String> {
     let is_logged_in = *state.is_logged_in.lock().map_err(|e| e.to_string())?;
-    let email = state.session_email.lock().map_err(|e| e.to_string())?.clone();
+    let email = state
+        .session_email
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone();
     // Prefer billing-detected plan over usage-derived plan_type.
     let plan_type = state
         .detected_plan
@@ -61,7 +65,11 @@ pub fn get_login_status(state: State<'_, AppState>) -> Result<LoginStatus, Strin
                 .ok()
                 .and_then(|u| u.as_ref().and_then(|d| d.plan_type.clone()))
         });
-    Ok(LoginStatus { is_logged_in, email, plan_type })
+    Ok(LoginStatus {
+        is_logged_in,
+        email,
+        plan_type,
+    })
 }
 
 #[tauri::command]
@@ -123,14 +131,20 @@ pub fn get_settings(state: State<'_, AppState>) -> Result<AppSettings, String> {
         .flatten()
         .and_then(|v| v.parse().ok())
         .unwrap_or(300u64);
-    Ok(AppSettings { refresh_interval_secs: interval })
+    Ok(AppSettings {
+        refresh_interval_secs: interval,
+    })
 }
 
 #[tauri::command]
 pub fn save_settings(settings: AppSettings, state: State<'_, AppState>) -> Result<(), String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
-    database::set_setting(&db, "refresh_interval_secs", &settings.refresh_interval_secs.to_string())
-        .map_err(|e| e.to_string())
+    database::set_setting(
+        &db,
+        "refresh_interval_secs",
+        &settings.refresh_interval_secs.to_string(),
+    )
+    .map_err(|e| e.to_string())
 }
 
 // ── Commands called directly from the session webview's JS ────────────────────
@@ -176,9 +190,9 @@ pub fn cm_login_check(
     // Parse the URL to check the host, not the full string.
     // Google OAuth URLs contain "claude.ai" in query params (app_domain=...),
     // so a string-contains check would give false positives.
-    let parsed = url.parse::<tauri::Url>().unwrap_or_else(|_| {
-        "https://unknown/".parse().unwrap()
-    });
+    let parsed = url
+        .parse::<tauri::Url>()
+        .unwrap_or_else(|_| "https://unknown/".parse().unwrap());
     let host = parsed.host_str().unwrap_or("");
     let path = parsed.path();
     let on_claude = host == "claude.ai" || host.ends_with(".claude.ai");
@@ -197,9 +211,7 @@ pub fn cm_login_check(
 
         if logged_in && !already_on_usage {
             if let Some(session) = app.get_webview_window("session") {
-                let _ = session.eval(
-                    "window.location.href = 'https://claude.ai/settings/usage';",
-                );
+                let _ = session.eval("window.location.href = 'https://claude.ai/settings/usage';");
             }
         }
     }
@@ -215,16 +227,26 @@ pub fn cm_api_data(
     state: State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    let data_val: serde_json::Value =
-        serde_json::from_str(&data).map_err(|e| e.to_string())?;
+    let data_val: serde_json::Value = serde_json::from_str(&data).map_err(|e| e.to_string())?;
 
     // ── /usage endpoint: extract 5h/7d quota AND extra_usage ─────────────────
-    if let Some(usage) = crate::api::claude_ai::parse_usage(&url, &data_val) {
+    if let Some(parsed_usage) = crate::api::claude_ai::parse_usage(&url, &data_val) {
+        let previous_usage = state
+            .latest_usage
+            .lock()
+            .map_err(|e| e.to_string())?
+            .clone();
+        let usage =
+            crate::api::claude_ai::merge_usage_with_previous(parsed_usage, previous_usage.as_ref());
+
         // Also parse the nested extra_usage object from the same response.
         if let Some(extra) = crate::api::claude_ai::parse_usage_extra(&data_val) {
             log::info!(
                 "cm_api_data: extra_usage — enabled={} spent={:.2} limit={:.2} util={:.1}%",
-                extra.enabled, extra.spent, extra.limit, extra.percent_used
+                extra.enabled,
+                extra.spent,
+                extra.limit,
+                extra.percent_used
             );
             *state.latest_extra.lock().map_err(|e| e.to_string())? = Some(extra);
         }
@@ -258,8 +280,7 @@ pub fn cm_api_data(
             let _ = tray.set_title(Some(&title));
             let _ = tray.set_tooltip(Some(&format!(
                 "Claude Usage Monitor\n5h: {:.0}%  7d: {:.0}%",
-                usage.five_hour.utilization,
-                usage.seven_day.utilization
+                usage.five_hour.utilization, usage.seven_day.utilization
             )));
         }
 
@@ -274,10 +295,13 @@ pub fn cm_api_data(
 
     // ── /prepaid/credits: patch balance + auto_reload into latest_extra ───────
     if url.contains("/prepaid/credits") {
-        if let Some((balance, auto_reload)) = crate::api::claude_ai::parse_prepaid_credits(&data_val) {
+        if let Some((balance, auto_reload)) =
+            crate::api::claude_ai::parse_prepaid_credits(&data_val)
+        {
             log::info!(
                 "cm_api_data: prepaid/credits — balance={:.2} auto_reload={}",
-                balance, auto_reload
+                balance,
+                auto_reload
             );
             // Update latest_extra in place; clone the result for the re-emit.
             let updated_extra = {
@@ -288,9 +312,13 @@ pub fn cm_api_data(
                 } else {
                     // /prepaid/credits arrived before /usage — store partial.
                     *guard = Some(crate::api::claude_ai::ExtraUsage {
-                        enabled: false, spent: 0.0, limit: 0.0,
-                        balance, percent_used: 0.0,
-                        resets_at: String::new(), auto_reload,
+                        enabled: false,
+                        spent: 0.0,
+                        limit: 0.0,
+                        balance,
+                        percent_used: 0.0,
+                        resets_at: String::new(),
+                        auto_reload,
                     });
                 }
                 guard.clone()
@@ -308,7 +336,10 @@ pub fn cm_api_data(
     if url.contains("/subscription_details") {
         if let Some(date) = data_val.get("next_charge_date").and_then(|v| v.as_str()) {
             let resets_at = format!("{}T00:00:00Z", date);
-            log::info!("cm_api_data: subscription_details — next_charge_date={}", date);
+            log::info!(
+                "cm_api_data: subscription_details — next_charge_date={}",
+                date
+            );
             let mut guard = state.latest_extra.lock().map_err(|e| e.to_string())?;
             if let Some(ref mut extra) = *guard {
                 extra.resets_at = resets_at;
@@ -320,7 +351,10 @@ pub fn cm_api_data(
             *state.detected_plan.lock().map_err(|e| e.to_string())? = Some(pt);
         }
         // seat_tier_quantities: {"max": N} → plan is max
-        if let Some(stq) = data_val.get("seat_tier_quantities").and_then(|v| v.as_object()) {
+        if let Some(stq) = data_val
+            .get("seat_tier_quantities")
+            .and_then(|v| v.as_object())
+        {
             let tier = if stq.keys().any(|k| k.contains("max")) {
                 Some("max")
             } else if stq.keys().any(|k| k.contains("pro")) {
@@ -329,7 +363,10 @@ pub fn cm_api_data(
                 None
             };
             if let Some(t) = tier {
-                log::info!("cm_api_data: subscription_details — seat_tier_quantities → {}", t);
+                log::info!(
+                    "cm_api_data: subscription_details — seat_tier_quantities → {}",
+                    t
+                );
                 *state.detected_plan.lock().map_err(|e| e.to_string())? = Some(t.to_string());
             }
         }
@@ -403,7 +440,9 @@ pub fn cm_popup_navigated(url: String, app: tauri::AppHandle) -> Result<(), Stri
         return Ok(());
     }
 
-    let parsed = url.parse::<tauri::Url>().unwrap_or_else(|_| "https://unknown/".parse().unwrap());
+    let parsed = url
+        .parse::<tauri::Url>()
+        .unwrap_or_else(|_| "https://unknown/".parse().unwrap());
     let host = parsed.host_str().unwrap_or("");
     let path = parsed.path();
     let on_claude = host == "claude.ai" || host.ends_with(".claude.ai");
@@ -416,7 +455,10 @@ pub fn cm_popup_navigated(url: String, app: tauri::AppHandle) -> Result<(), Stri
         && !path.starts_with("/api/");
 
     if done {
-        log::info!("cm_popup_navigated: redirect-flow OAuth complete at {}", url);
+        log::info!(
+            "cm_popup_navigated: redirect-flow OAuth complete at {}",
+            url
+        );
         if let Some(popup) = app.get_webview_window("oauth-popup") {
             let _ = popup.close();
         }
@@ -435,13 +477,21 @@ pub fn cm_popup_navigated(url: String, app: tauri::AppHandle) -> Result<(), Stri
 #[tauri::command]
 pub fn cm_oauth_message(data: String, origin: String, app: tauri::AppHandle) -> Result<(), String> {
     let preview = &data[..data.len().min(120)];
-    log::info!("cm_oauth_message: origin={} data_preview={}", origin, preview);
+    log::info!(
+        "cm_oauth_message: origin={} data_preview={}",
+        origin,
+        preview
+    );
 
     if let Some(session) = app.get_webview_window("session") {
         // 1. Dispatch the MessageEvent so claude.ai's GIS listener can process
         //    the auth token.  We use JSON.parse() to safely re-hydrate the value
         //    from the JSON string, avoiding any JS literal escaping issues.
-        let safe_origin = if origin == "*" { "https://claude.ai".to_string() } else { origin.clone() };
+        let safe_origin = if origin == "*" {
+            "https://claude.ai".to_string()
+        } else {
+            origin.clone()
+        };
         let json_data_literal = serde_json::to_string(&data).unwrap_or_else(|_| "null".to_string());
         let dispatch_js = format!(
             r#"(function(){{
@@ -461,9 +511,8 @@ pub fn cm_oauth_message(data: String, origin: String, app: tauri::AppHandle) -> 
 
         // 2. Mark the mock popup object as closed so claude.ai's polling loop
         //    (if (popup.closed) clearInterval(...)}) can advance past this point.
-        let _ = session.eval(
-            "if (window.__cm_oauth_mock) { window.__cm_oauth_mock.closed = true; }"
-        );
+        let _ =
+            session.eval("if (window.__cm_oauth_mock) { window.__cm_oauth_mock.closed = true; }");
 
         // 3. Fallback: if the GIS handler can't process the relay (e.g. because
         //    event.source is null), give it 2 s then navigate the session window
