@@ -31,7 +31,7 @@ export default function App() {
     if (!el) return;
     let lastH = 0;
     const sync = () => {
-      const h = el.scrollHeight;
+      const h = Math.ceil(el.getBoundingClientRect().height);
       if (h > 0 && h !== lastH) {
         lastH = h;
         getCurrentWindow().setSize({ type: "Logical", width: 360, height: h } as never).catch(() => {});
@@ -39,9 +39,9 @@ export default function App() {
     };
     const ro = new ResizeObserver(sync);
     ro.observe(el);
-    sync();
+    requestAnimationFrame(sync);
     return () => ro.disconnect();
-  }, []);
+  }, [usage, loading, error, isLoggedIn]);
 
   async function handleLogout() {
     try { await invoke("logout"); } catch (_) {}
